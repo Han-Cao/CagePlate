@@ -4,7 +4,7 @@ use cageplate::{
     Error, Result, cage_to_plate,
     config::AppConfig,
     plate_to_cage,
-    tsv::{parse_tsv, write_tsv},
+    tsv::{parse_tsv_with_header, write_tsv},
 };
 use std::{
     env, fs,
@@ -12,7 +12,7 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "CagePlate headless table converter\n\nUsage:\n  cageplate-cli cage-to-plate [--input PATH|-] [--output PATH|-] [--config JSON]\n  cageplate-cli plate-to-cage [--input PATH|-] [--output PATH|-] [--config JSON]\n\nInput/output default to stdin/stdout. Configuration defaults are built-in, not GUI-saved.\nUse --help to show this message. See docs/development.md for examples.\n";
+const USAGE: &str = "CagePlate headless table converter\n\nUsage:\n  cageplate-cli cage-to-plate [--input PATH|-] [--output PATH|-] [--config JSON]\n  cageplate-cli plate-to-cage [--input PATH|-] [--output PATH|-] [--config JSON]\n\nInput/output default to stdin/stdout. Configuration defaults are built-in, not GUI-saved.\nFor headerless cage-to-plate input, set has_header: false and positional mappings in its config. Plate-to-cage requires headers.\nUse --help to show this message. See docs/development.md for examples.\n";
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
@@ -88,7 +88,12 @@ fn run(options: Options) -> Result<()> {
     } else {
         read_limited(fs::File::open(&options.input)?, MAX_INPUT_BYTES)?
     };
-    let table = parse_tsv(&input)?;
+    let has_header = match options.command.as_str() {
+        "cage-to-plate" => config.cage_to_plate.has_header,
+        "plate-to-cage" => config.plate_to_cage.has_header,
+        _ => unreachable!("validated command"),
+    };
+    let table = parse_tsv_with_header(&input, has_header)?;
     let output = match options.command.as_str() {
         "cage-to-plate" => cage_to_plate::convert(&table, &config.cage_to_plate)?,
         "plate-to-cage" => plate_to_cage::convert(&table, &config.plate_to_cage)?,

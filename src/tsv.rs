@@ -1,4 +1,4 @@
-//! Headered, quoted TSV parsing, stable mappings, and output presentation.
+//! Quoted TSV parsing with optional headers, explicit mappings and output presentation.
 
 use crate::{
     Error, Result,
@@ -50,19 +50,56 @@ fn validate_quotes(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn tsv_reader(text: &str) -> csv::Reader<&[u8]> {
+    csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(text.as_bytes())
+}
+
+/// Infer the cage-inventory header option from the first nonempty TSV record.
+///
+/// Any trimmed cell that is a finite number (including signed/decimal/scientific
+/// notation) means headerless; otherwise the first record is a header. Digits
+/// embedded in names such as `5XFAD` are not numbers. Empty input returns `None`.
+/// This clipboard heuristic does not replace parsing/conversion validation.
+pub fn infer_has_header(text: &str) -> Result<Option<bool>> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    validate_quotes(text)?;
+    for record in tsv_reader(text).records() {
+        let record = record.map_err(|e| Error::new(format!("Invalid TSV: {e}")))?;
+        if record.iter().all(|cell| cell.trim().is_empty()) {
+            continue;
+        }
+        return Ok(Some(
+            !record
+                .iter()
+                .any(|cell| cell.trim().parse::<f64>().is_ok_and(f64::is_finite)),
+        ));
+    }
+    Ok(None)
+}
+
 /// Parse a nonempty, headered TSV table, preserving free-text cells and positions.
 ///
 /// Supports a BOM, quoted tabs/newlines, CRLF, and trailing empty fields. Wholly
 /// empty records are ignored. Returns actionable errors for malformed quoting,
 /// ragged rows, empty headers/data, or documented size limits.
 pub fn parse_tsv(text: &str) -> Result<InputTable> {
+    parse_tsv_with_header(text, true)
+}
+
+/// Parse TSV with an explicit source-header mode; never detect it from cell values.
+///
+/// Without a header, every nonempty record is data and display-only `Column N`
+/// labels are synthesized. Limits include this label row in both modes. Quoting,
+/// blank-record handling and physical diagnostic positions match [`parse_tsv`].
+/// The first data row is retained even for a single-record input.
+pub fn parse_tsv_with_header(text: &str, has_header: bool) -> Result<InputTable> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     validate_quotes(text)?;
-    let mut reader = csv::ReaderBuilder::new()
-        .delimiter(b'\t')
-        .has_headers(false)
-        .flexible(true)
-        .from_reader(text.as_bytes());
+    let mut reader = tsv_reader(text);
     let mut line_starts = vec![0];
     for (index, byte) in text.bytes().enumerate() {
         if byte == b'\n' || (byte == b'\r' && text.as_bytes().get(index + 1) != Some(&b'\n')) {
@@ -86,33 +123,41 @@ pub fn parse_tsv(text: &str) -> Result<InputTable> {
                 .count();
         let line = line_starts.partition_point(|&position| position <= start);
         if headers.is_empty() {
-            headers = record.iter().map(String::from).collect();
-            if headers.iter().any(|s| s.trim().is_empty()) {
-                return Err(Error::new(format!(
-                    "Empty source column name at line {line}; name every input column"
-                )));
+            check_size(1, record.len())?;
+            if has_header {
+                headers = record.iter().map(String::from).collect();
+                if headers.iter().any(|s| s.trim().is_empty()) {
+                    return Err(Error::new(format!(
+                        "Empty source column name at line {line}; name every input column"
+                    )));
+                }
+                continue;
             }
-            check_size(1, headers.len())?;
-        } else {
-            if record.len() != headers.len() {
-                return Err(Error::new(format!(
-                    "Ragged TSV row at line {line}: expected {} cells, found {}; retain trailing tabs for empty cells",
-                    headers.len(),
-                    record.len()
-                )));
-            }
-            if rows.len() >= MAX_MICE {
-                return Err(Error::new(format!("Input exceeds {MAX_MICE} data rows")));
-            }
-            check_size(rows.len() + 2, headers.len())?;
-            source_rows.push(line);
-            rows.push(record.iter().map(String::from).collect());
+            headers = (1..=record.len()).map(|n| format!("Column {n}")).collect();
         }
+        if record.len() != headers.len() {
+            return Err(Error::new(format!(
+                "Ragged TSV row at line {line}: expected {} cells, found {}; retain trailing tabs for empty cells",
+                headers.len(),
+                record.len()
+            )));
+        }
+        if rows.len() >= MAX_MICE {
+            return Err(Error::new(format!("Input exceeds {MAX_MICE} data rows")));
+        }
+        check_size(rows.len() + 2, headers.len())?;
+        source_rows.push(line);
+        rows.push(record.iter().map(String::from).collect());
     }
     if headers.is_empty() || rows.is_empty() {
-        return Err(Error::new("Paste a header row and at least one data row"));
+        return Err(Error::new(if has_header {
+            "Paste a header row and at least one data row"
+        } else {
+            "Paste at least one data row (no header)"
+        }));
     }
     Ok(InputTable {
+        has_header,
         headers,
         rows,
         source_rows,
@@ -133,7 +178,7 @@ impl InputTable {
             || self.rows.iter().any(|r| r.len() != self.headers.len())
         {
             return Err(Error::new(
-                "Input requires named headers and rectangular rows",
+                "Input requires nonempty column labels and rectangular rows",
             ));
         }
         Ok(())
@@ -141,45 +186,65 @@ impl InputTable {
 }
 
 impl ColumnRef {
-    /// Resolve a saved mapping against the current headers, rejecting absent or
-    /// ambiguous names instead of using a stale position.
+    /// Resolve an explicit position or named/occurrence mapping against this input.
+    /// Named references are rejected for headerless data, even if they match a
+    /// synthesized display label. Positions are one-based and checked each time.
     pub fn resolve(&self, table: &InputTable) -> Result<usize> {
+        self.validate()?;
+        if let Self::Position { column } = self {
+            return if *column <= table.headers.len() {
+                Ok(column - 1)
+            } else {
+                Err(Error::new(format!(
+                    "Column {column} is out of range: input has {} columns; remap the pasted table",
+                    table.headers.len()
+                )))
+            };
+        }
+        if !table.has_header {
+            return Err(Error::new(format!(
+                "Named mapping {:?} cannot identify headerless data; select a column number in Config",
+                self.display_name()
+            )));
+        }
+        let header = self.header().expect("named reference");
         let matches: Vec<_> = table
             .headers
             .iter()
             .enumerate()
-            .filter(|(_, h)| h.as_str() == self.header())
+            .filter(|(_, h)| h.as_str() == header)
             .map(|(i, _)| i)
             .collect();
         match self {
             Self::Name(_) if matches.len() == 1 => Ok(matches[0]),
             Self::Name(_) if matches.len() > 1 => Err(Error::new(format!(
-                "Column {:?} is duplicated; select a specific occurrence",
-                self.header()
+                "Column {header:?} is duplicated; select a specific occurrence"
             ))),
             Self::Occurrence { occurrence, .. } => {
                 matches.get(*occurrence).copied().ok_or_else(|| {
                     Error::new(format!(
-                        "Missing column {:?}, occurrence {}; remap the pasted table",
-                        self.header(),
+                        "Missing column {header:?}, occurrence {}; remap the pasted table",
                         occurrence + 1
                     ))
                 })
             }
             _ => Err(Error::new(format!(
-                "Missing column {:?}; remap the pasted table",
-                self.header()
+                "Missing column {header:?}; remap the pasted table"
             ))),
         }
     }
 
-    /// Construct a stable mapping from a selected actual column position.
-    /// Returns an error for an out-of-range selection.
+    /// Construct a mode-appropriate mapping from a selected zero-based position.
+    /// Headered inputs use names/occurrences; headerless inputs use one-based
+    /// positions. Returns an error for an out-of-range selection.
     pub fn from_index(table: &InputTable, index: usize) -> Result<Self> {
         let header = table
             .headers
             .get(index)
             .ok_or_else(|| Error::new("Column index out of range"))?;
+        if !table.has_header {
+            return Ok(Self::Position { column: index + 1 });
+        }
         if table.headers.iter().filter(|h| *h == header).count() == 1 {
             return Ok(Self::Name(header.clone()));
         }
@@ -291,11 +356,22 @@ impl OutputConfig {
 /// Serialize all header/body rows as quoted TSV, including trailing empty cells.
 /// Returns an error for malformed output shape or serialization failure.
 pub fn write_tsv(table: &OutputTable) -> Result<String> {
+    serialize_tsv(table, true)
+}
+
+/// Serialize only body rows as quoted TSV, omitting every output header level.
+/// Shape validation, quoting, row order and trailing empties match [`write_tsv`].
+pub fn write_tsv_without_headers(table: &OutputTable) -> Result<String> {
+    serialize_tsv(table, false)
+}
+
+fn serialize_tsv(table: &OutputTable, with_headers: bool) -> Result<String> {
     table.validate()?;
     let mut writer = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .from_writer(vec![]);
-    for row in table.headers.iter().chain(&table.rows) {
+    let skip = if with_headers { 0 } else { table.headers.len() };
+    for row in table.headers.iter().skip(skip).chain(&table.rows) {
         writer
             .write_record(row)
             .map_err(|e| Error::new(format!("Cannot encode TSV: {e}")))?;
@@ -309,6 +385,65 @@ pub fn write_tsv(table: &OutputTable) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_record_header_inference_uses_numeric_cells_not_embedded_digits() {
+        for text in [
+            "Cage #\tQTY\tSEX\nA\t2\tF",
+            "5XFAD\tLSL\tSex",
+            "Cage1\tCount2\tSex",
+            "\u{feff}\r\nCage\tQuantity\tSex",
+        ] {
+            assert_eq!(infer_has_header(text).unwrap(), Some(true), "{text:?}");
+        }
+        for text in [
+            "A\t2\tF",
+            "\u{feff}\r\nA\t\" 2 \"\tF",
+            "-1\tSex",
+            "A\t1.5\tF",
+            "A\t1e3\tF",
+            "\"A\ncontinued\"\t3\tF",
+        ] {
+            assert_eq!(infer_has_header(text).unwrap(), Some(false), "{text:?}");
+        }
+        for text in ["", "\t\r\n\t\r\n"] {
+            assert_eq!(infer_has_header(text).unwrap(), None);
+        }
+        assert!(infer_has_header("A\t\"unterminated").is_err());
+    }
+
+    #[test]
+    fn body_only_serialization_omits_all_header_levels_but_keeps_cells() {
+        let table = OutputTable {
+            keys: vec!["a".into(), "b".into(), "c".into()],
+            headers: vec![
+                vec!["outer".into(), "".into(), "".into()],
+                vec!["A".into(), "B".into(), "C".into()],
+            ],
+            rows: vec![
+                vec![
+                    "A\tquoted".into(),
+                    "line1\nline2 \"quoted\"".into(),
+                    "".into(),
+                ],
+                vec!["B".into(), "text".into(), "".into()],
+            ],
+        };
+        let body = write_tsv_without_headers(&table).unwrap();
+        let records: Vec<Vec<String>> = tsv_reader(&body)
+            .records()
+            .map(|record| record.unwrap().iter().map(String::from).collect())
+            .collect();
+        assert_eq!(records, table.rows);
+        assert!(!body.starts_with("outer"));
+        assert!(body.ends_with("\t\n"));
+        let mut single = table.clone();
+        single.headers.remove(0);
+        assert_eq!(write_tsv_without_headers(&single).unwrap(), body);
+        let mut invalid = table;
+        invalid.rows[0].pop();
+        assert!(write_tsv_without_headers(&invalid).is_err());
+    }
 
     #[test]
     fn quotes_bom_crlf_and_trailing_empty_cells() {

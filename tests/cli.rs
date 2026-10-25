@@ -20,6 +20,58 @@ fn normalize(text: &[u8]) -> String {
 }
 
 #[test]
+fn only_cage_to_plate_allows_explicit_headerless_input() {
+    let temp = tempfile::tempdir().unwrap();
+    for (command, input, config, expected) in [
+        (
+            "cage-to-plate",
+            "A\t1\tF\n",
+            r#"{"cage_to_plate":{"has_header":false,"cage":{"column":1},"quantity":{"column":2},"sex":{"column":3}}}"#,
+            "A (F)",
+        ),
+        (
+            "plate-to-cage",
+            "A (F)\tR\t1\t+/+\n",
+            r#"{"plate_to_cage":{"has_header":false,"cage":{"column":1},"ear":{"column":2},"mouse_number":{"column":3},"within_cage":null,"plate":null,"well":null,"groups":[{"column":{"column":4}}]}}"#,
+            "requires a header row",
+        ),
+    ] {
+        let path = temp.path().join("explicit.json");
+        fs::write(&path, config).unwrap();
+        let mut child = cli()
+            .args([command, "--config"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        if command == "plate-to-cage" {
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+            continue;
+        }
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(expected), "{text}");
+        assert_eq!(text.lines().count(), 2);
+    }
+}
+
+#[test]
 fn both_fixture_commands_reproduce_exact_outputs() {
     for (command, name) in [
         ("cage-to-plate", "cage2plate"),

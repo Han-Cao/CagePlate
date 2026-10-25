@@ -1,6 +1,7 @@
 [package]
 name = "cageplate"
 version = "0.1.0"
+edition = "2024"
 rust-version = "1.95"
 description = "Clipboard-based cage and DNA plate table conversions"
 license = "MIT"

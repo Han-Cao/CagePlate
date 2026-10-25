@@ -74,15 +74,16 @@ impl GroupConfig {
         Ok(())
     }
 
-    /// Return the user override or `Group, genotype` for one known state.
+    /// Return the override or `Group, genotype`; unnamed positional groups use
+    /// `Column N` instead of a source header.
     pub fn label(&self, state: Genotype, tokens: &GenotypeTokens) -> String {
         self.labels.get(&state).cloned().unwrap_or_else(|| {
             format!(
                 "{}, {}",
                 if self.name.trim().is_empty() {
-                    self.column.header()
+                    self.column.display_name()
                 } else {
-                    &self.name
+                    self.name.as_str().into()
                 },
                 tokens.token(state)
             )
@@ -186,6 +187,11 @@ impl PlateToCageConfig {
     /// Validate settings without input. An empty group list is allowed for saved
     /// defaults but conversions require at least one selected gene.
     pub fn validate(&self) -> Result<()> {
+        if !self.has_header {
+            return Err(Error::new(
+                "Plate to Cage requires a header row to identify genotype names",
+            ));
+        }
         for column in [&self.cage, &self.ear, &self.mouse_number]
             .into_iter()
             .chain(
@@ -302,11 +308,17 @@ fn set_sex(block: &mut Block, sex: &str, row: usize) -> Result<()> {
 /// Normalize mapped sparse/inline/repeated mouse rows into biological records.
 ///
 /// All selected genotype calls are checked, including rows destined for unknown.
-/// Rejects orphan/ambiguous blocks, conflicting sex, duplicate global numbers,
+/// Requires source headers for genotype names. Rejects headerless input,
+/// orphan/ambiguous blocks, conflicting sex, duplicate global numbers,
 /// duplicate supplied within-cage indices, or absent required source fields.
 pub fn normalize_mouse_rows(table: &InputTable, config: &PlateToCageConfig) -> Result<Vec<Mouse>> {
     table.validate()?;
     config.validate()?;
+    if !table.has_header {
+        return Err(Error::new(
+            "Plate to Cage requires a header row to identify genotype names",
+        ));
+    }
     if config.groups.is_empty() {
         return Err(Error::new("Select at least one genotype column"));
     }

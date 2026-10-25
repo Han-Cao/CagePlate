@@ -2,7 +2,28 @@
 
 use eframe::egui;
 
+pub(super) const SECTION_FONT: &str = "CagePlateBold";
+
 pub(super) fn apply(ctx: &egui::Context) {
+    // egui's RichText::strong only changes color. Use a real bold face for
+    // headings while keeping the default fonts/fallbacks for body text/icons.
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        SECTION_FONT.into(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/Ubuntu-Bold.ttf")).into(),
+    );
+    let mut family = vec![SECTION_FONT.into()];
+    family.extend(
+        fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(SECTION_FONT.into()), family);
+    ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Light);
     let mut visuals = egui::Visuals::light();
     visuals.override_text_color = Some(egui::Color32::from_gray(25));
@@ -39,6 +60,33 @@ mod tests {
     fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn section_titles_use_a_bundled_bold_face_not_just_stronger_color() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            super::super::settings::section_title(ui, "Input");
+        });
+        output.textures_delta.clear();
+        let title = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Input" => Some(text),
+                _ => None,
+            })
+            .expect("section title");
+        assert!(
+            title
+                .galley
+                .job
+                .sections
+                .iter()
+                .all(|section| section.format.font_id.family
+                    == egui::FontFamily::Name(SECTION_FONT.into()))
+        );
     }
 
     #[test]

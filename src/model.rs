@@ -11,12 +11,14 @@ pub const MAX_CELLS: usize = 2_000_000;
 /// Maximum selected genotype hierarchy depth.
 pub const MAX_GROUPS: usize = 8;
 
-/// A parsed headered TSV, with physical line positions retained for diagnostics.
+/// A parsed TSV, with explicit header mode and physical diagnostic positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputTable {
-    /// Source column names; duplicates are supported through occurrence mappings.
+    /// Whether headers came from the input rather than synthesized display labels.
+    pub has_header: bool,
+    /// Source names (duplicates supported), or display-only `Column N` labels.
     pub headers: Vec<String>,
-    /// Rectangular data rows, without the header.
+    /// Rectangular data rows, excluding the source header when one is present.
     pub rows: Vec<Vec<String>>,
     /// Physical starting line corresponding to each data row.
     pub source_rows: Vec<usize>,

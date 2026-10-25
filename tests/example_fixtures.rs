@@ -1,9 +1,45 @@
 use cageplate::{
     cage_to_plate,
-    config::AppConfig,
+    config::{AppConfig, ColumnRef},
     plate_to_cage,
-    tsv::{parse_tsv, write_tsv},
+    tsv::{parse_tsv, parse_tsv_with_header, write_tsv},
 };
+
+#[test]
+fn cage_headerless_fixture_matches_headered_cells_and_tsv() {
+    let source = include_str!("../example/cage2plate.input.txt");
+    let headed = parse_tsv(source).unwrap();
+    let table = parse_tsv_with_header(source.split_once('\n').unwrap().1, false).unwrap();
+    let mut config = AppConfig::from_json(include_str!("fixtures/cage-to-plate.example.json"))
+        .unwrap()
+        .cage_to_plate;
+    let expected = cage_to_plate::convert(&headed, &config).unwrap();
+    config.has_header = false;
+    for reference in [&mut config.cage, &mut config.quantity, &mut config.sex] {
+        *reference = ColumnRef::Position {
+            column: reference.resolve(&headed).unwrap() + 1,
+        };
+    }
+    let actual = cage_to_plate::convert(&table, &config).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(write_tsv(&actual).unwrap(), write_tsv(&expected).unwrap());
+}
+
+#[test]
+fn plate_fixture_without_header_names_is_rejected() {
+    let source = include_str!("../example/plate2cage.input.txt");
+    let table = parse_tsv_with_header(source.split_once('\n').unwrap().1, false).unwrap();
+    let mut config = AppConfig::from_json(include_str!("fixtures/plate-to-cage.example.json"))
+        .unwrap()
+        .plate_to_cage;
+    let error = plate_to_cage::convert(&table, &config)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requires a header row"), "{error}");
+    config.has_header = false;
+    assert!(config.validate().is_err());
+    assert!(plate_to_cage::convert(&table, &config).is_err());
+}
 
 #[test]
 fn plate_to_cage_matches_supplied_fixture() {

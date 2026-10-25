@@ -1,9 +1,10 @@
-//! Serializable settings. Source mappings never depend on stale numeric positions.
+//! Serializable settings with named or explicitly positional source mappings.
 
 use crate::model::Genotype;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs,
     io::{Read, Write},
@@ -13,7 +14,7 @@ use std::{
 /// On-disk settings schema version.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// A source column, addressed by header and optionally duplicate occurrence.
+/// A source column, addressed by header/occurrence or an explicit column number.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum ColumnRef {
@@ -26,26 +27,49 @@ pub enum ColumnRef {
         /// Zero-based occurrence, not absolute column position.
         occurrence: usize,
     },
+    /// An explicit one-based source position, independent of display labels.
+    Position {
+        /// One-based column number (1 is the leftmost column).
+        column: usize,
+    },
 }
 
 impl ColumnRef {
-    /// Reject blank source names or impossible duplicate occurrence selections.
+    /// Reject blank names, impossible occurrences and out-of-range column numbers.
     pub fn validate(&self) -> Result<()> {
-        if self.header().trim().is_empty()
-            || matches!(self, Self::Occurrence { occurrence, .. } if *occurrence >= crate::model::MAX_COLUMNS)
-        {
-            return Err(Error::new(
-                "Source mappings need a nonempty header and a valid occurrence",
-            ));
+        match self {
+            Self::Position { column } if !(1..=crate::model::MAX_COLUMNS).contains(column) => {
+                Err(Error::new(format!(
+                    "Source column number must be in 1..={}",
+                    crate::model::MAX_COLUMNS
+                )))
+            }
+            Self::Position { .. } => Ok(()),
+            _ if self.header().is_some_and(|h| h.trim().is_empty())
+                || matches!(self, Self::Occurrence { occurrence, .. } if *occurrence >= crate::model::MAX_COLUMNS) =>
+            {
+                Err(Error::new(
+                    "Source mappings need a nonempty header and a valid occurrence",
+                ))
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 
-    /// Return the mapped header text without resolving it against an input table.
-    pub fn header(&self) -> &str {
+    /// Return a named source header, or `None` for an explicit position.
+    pub fn header(&self) -> Option<&str> {
         match self {
-            Self::Name(name) => name,
-            Self::Occurrence { header, .. } => header,
+            Self::Name(name) => Some(name),
+            Self::Occurrence { header, .. } => Some(header),
+            Self::Position { .. } => None,
+        }
+    }
+
+    /// Human-readable source identity, including `Column N` for positions.
+    pub fn display_name(&self) -> Cow<'_, str> {
+        match self {
+            Self::Position { column } => format!("Column {column}").into(),
+            _ => self.header().expect("named reference").into(),
         }
     }
 }
@@ -84,6 +108,8 @@ pub enum CageLayout {
     Newline,
     /// First row is `Cage (Sex)`.
     Inline,
+    /// Repeat cage ID and sex in separate columns on every mouse row.
+    SeparateColumn,
 }
 
 /// Explicit interpretation of per-mouse cage/sex input cells.
@@ -159,6 +185,8 @@ impl Default for PlateConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CageToPlateConfig {
+    /// Whether the first nonempty input record is a header (default true).
+    pub has_header: bool,
     /// Cage ID source.
     pub cage: ColumnRef,
     /// Quantity source.
@@ -178,6 +206,7 @@ pub struct CageToPlateConfig {
 impl Default for CageToPlateConfig {
     fn default() -> Self {
         Self {
+            has_header: true,
             cage: "Cage #".into(),
             quantity: "QTY".into(),
             sex: "SEX".into(),
@@ -220,7 +249,7 @@ impl Default for GenotypeTokens {
 pub struct GroupConfig {
     /// Source genotype column.
     pub column: ColumnRef,
-    /// Group display name; blank means use the source header.
+    /// Group display name; blank uses the source header or positional `Column N`.
     pub name: String,
     /// Include all or existing known categories.
     pub mode: CategoryMode,
@@ -246,6 +275,9 @@ impl Default for GroupConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlateToCageConfig {
+    /// Must be true: genotype sources require a header row. Retained in JSON for
+    /// compatibility; false is rejected rather than silently losing gene names.
+    pub has_header: bool,
     /// Cage or combined cage/sex source.
     pub cage: ColumnRef,
     /// Separate sex source, required in repeated layout.
@@ -279,6 +311,7 @@ pub struct PlateToCageConfig {
 impl Default for PlateToCageConfig {
     fn default() -> Self {
         Self {
+            has_header: true,
             cage: "Cage".into(),
             sex: None,
             ear: "Ear".into(),
@@ -418,6 +451,34 @@ pub fn save_defaults(path: &Path, config: &AppConfig) -> Result<()> {
         ))
     })?;
     Ok(())
+}
+
+/// Selected workflow settings to persist without saving unrelated live edits.
+#[derive(Debug, Clone, Copy)]
+pub enum WorkflowDefaults<'a> {
+    /// Save only the cage expansion defaults.
+    CageToPlate(&'a CageToPlateConfig),
+    /// Save only the genotype summary defaults.
+    PlateToCage(&'a PlateToCageConfig),
+}
+
+/// Merge one workflow into the latest saved defaults and atomically replace them.
+///
+/// A missing file starts from tool built-ins. An unreadable, invalid or unsupported
+/// existing file is never replaced: return its error so the user can recover it.
+/// The other workflow always comes from disk, not unsaved application state.
+/// Like [`save_defaults`], this is explicit settings-only I/O, not autosave.
+pub fn save_workflow_defaults(path: &Path, workflow: WorkflowDefaults<'_>) -> Result<()> {
+    let mut saved = if path.try_exists()? {
+        read_config(path)?
+    } else {
+        AppConfig::default()
+    };
+    match workflow {
+        WorkflowDefaults::CageToPlate(settings) => saved.cage_to_plate = settings.clone(),
+        WorkflowDefaults::PlateToCage(settings) => saved.plate_to_cage = settings.clone(),
+    }
+    save_defaults(path, &saved)
 }
 
 impl Default for AppConfig {

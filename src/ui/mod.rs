@@ -1,6 +1,7 @@
 //! Native clipboard UI. Conversion logic remains in the shared library.
 
 mod cage_to_plate;
+mod config_dialog;
 mod plate_to_cage;
 mod settings;
 mod theme;
@@ -9,7 +10,7 @@ use ::cageplate::{
     Result,
     config::{self, AppConfig, OutputConfig},
     model::{InputTable, OutputTable},
-    tsv::{parse_tsv, write_tsv},
+    tsv::{infer_has_header, parse_tsv_with_header, write_tsv, write_tsv_without_headers},
 };
 use eframe::egui;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ struct Workflow {
     input_error: Option<String>,
     output: Option<OutputTable>,
     output_tsv: String,
+    output_tsv_without_headers: String,
     conversion_error: Option<String>,
     stale: bool,
 }
@@ -31,14 +33,40 @@ impl Workflow {
         self.conversion_error = None;
     }
 
-    fn input_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("1. Paste spreadsheet input");
+    fn reparse(&mut self, has_header: bool) {
+        self.invalidate();
+        match parse_tsv_with_header(&self.input, has_header) {
+            Ok(table) => {
+                self.parsed = Some(table);
+                self.input_error = None;
+            }
+            Err(error) => {
+                self.parsed = None;
+                self.input_error = if self.input.trim().is_empty() {
+                    None
+                } else {
+                    Some(error.to_string())
+                };
+            }
+        }
+    }
+
+    // Only Cage to Plate exposes/infer its header option. Plate to Cage passes
+    // None, always parses headers, and has no headerless UI path.
+    fn input_ui(&mut self, ui: &mut egui::Ui, header_option: Option<&mut bool>) {
+        settings::section_title(ui, "Input");
+        let infer_on_paste = header_option.is_some();
+        let mut has_header = header_option.as_deref().copied().unwrap_or(true);
         let mut replace = false;
         let mut clear = false;
-        ui.horizontal(|ui| {
+        let header_changed = infer_on_paste
+            && ui
+                .checkbox(&mut has_header, "Input includes header row")
+                .changed();
+        ui.horizontal_wrapped(|ui| {
             replace = ui.button("Paste / replace").on_hover_text("Replace input with clipboard text. You can also focus the box and press Ctrl+V.").clicked();
             clear = ui.button("Clear").clicked();
-            ui.label("Headered TSV · copy cells directly from Excel");
+            ui.label(if has_header { "TSV with headers - copy cells from Excel" } else { "Headerless TSV - select columns in Config" });
         });
         if replace || clear {
             self.input.clear();
@@ -55,22 +83,23 @@ impl Workflow {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
-        if response.changed() || replace || clear {
-            self.invalidate();
-            match parse_tsv(&self.input) {
-                Ok(table) => {
-                    self.parsed = Some(table);
-                    self.input_error = None;
-                }
-                Err(error) => {
-                    self.parsed = None;
-                    self.input_error = if self.input.trim().is_empty() {
-                        None
-                    } else {
-                        Some(error.to_string())
-                    };
-                }
-            }
+        if response.changed()
+            && infer_on_paste
+            && ui.ctx().input(|input| {
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Paste(_)))
+            })
+            && let Ok(Some(inferred)) = infer_has_header(&self.input)
+        {
+            has_header = inferred;
+        }
+        if let Some(option) = header_option {
+            *option = has_header;
+        }
+        if response.changed() || replace || clear || header_changed {
+            self.reparse(has_header);
         }
         if let Some(error) = &self.input_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
@@ -102,10 +131,16 @@ impl Workflow {
                 .as_ref()
                 .map(convert)
                 .expect("enabled with input")
-                .and_then(|output| Ok((write_tsv(&output)?, output)))
-            {
-                Ok((text, output)) => {
+                .and_then(|output| {
+                    Ok((
+                        write_tsv(&output)?,
+                        write_tsv_without_headers(&output)?,
+                        output,
+                    ))
+                }) {
+                Ok((text, body, output)) => {
                     self.output_tsv = text;
+                    self.output_tsv_without_headers = body;
                     self.output = Some(output);
                     self.stale = false;
                     self.conversion_error = None;
@@ -116,18 +151,25 @@ impl Workflow {
                 }
             }
         }
-        if ui
-            .add_enabled(
-                self.output.is_some() && !self.stale,
-                egui::Button::new("Copy full output (with headers)"),
-            )
-            .clicked()
-        {
-            ui.ctx().copy_text(self.output_tsv.clone());
-        }
         if let Some(error) = &self.conversion_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
+        settings::section_title(ui, "Output");
+        ui.horizontal_wrapped(|ui| {
+            let ready = self.output.is_some() && !self.stale;
+            if ui
+                .add_enabled(ready, egui::Button::new("Copy output (with headers)"))
+                .clicked()
+            {
+                ui.ctx().copy_text(self.output_tsv.clone());
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("Copy output (without headers)"))
+                .clicked()
+            {
+                ui.ctx().copy_text(self.output_tsv_without_headers.clone());
+            }
+        });
         if self.stale && self.output.is_some() {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -141,7 +183,6 @@ impl Workflow {
 }
 
 fn preview(ui: &mut egui::Ui, table: &OutputTable) {
-    ui.heading("Output preview (read-only)");
     ui.label(format!(
         "{} rows · {} columns · hover a cell to read its full contents",
         table.rows.len(),
@@ -190,7 +231,7 @@ pub(super) struct CagePlateApp {
     config: AppConfig,
     config_path: Option<PathBuf>,
     warning: Option<String>,
-    status: String,
+    dialog: Option<config_dialog::ConfigDialog>,
     tab: usize,
     cage: Workflow,
     plate: Workflow,
@@ -210,7 +251,7 @@ impl CagePlateApp {
             config,
             config_path: path,
             warning,
-            status: String::new(),
+            dialog: None,
             tab: 0,
             cage: Workflow::default(),
             plate: Workflow::default(),
@@ -224,30 +265,13 @@ impl eframe::App for CagePlateApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let mut open_config = false;
         theme::root_frame(ui.style()).show(ui, |ui| {
-            let mut save = false;
-            let mut restore = false;
             ui.horizontal_wrapped(|ui| {
-                ui.heading("CagePlate");
-                ui.selectable_value(&mut self.tab, 0, "Cage → Plate");
-                ui.selectable_value(&mut self.tab, 1, "Plate → Cage");
-                save = ui
-                    .add_enabled(
-                        self.config_path.is_some(),
-                        egui::Button::new("Save as default"),
-                    )
-                    .clicked();
-                restore = ui.button("Restore built-ins").clicked();
+                settings::section_title(ui, "CagePlate");
+                ui.selectable_value(&mut self.tab, 0, "Cage to Plate");
+                ui.selectable_value(&mut self.tab, 1, "Plate to Cage");
             });
-            if restore {
-                self.config = AppConfig::default();
-                self.cage.invalidate();
-                self.plate.invalidate();
-                self.status = "Built-ins restored in memory. Save as default to persist.".into();
-            }
-            if let Some(path) = &self.config_path {
-                ui.small(format!("Defaults: {}", path.display()));
-            }
             if let Some(warning) = &self.warning {
                 let mut dismiss = false;
                 ui.horizontal_wrapped(|ui| {
@@ -258,9 +282,6 @@ impl eframe::App for CagePlateApp {
                     self.warning = None;
                 }
             }
-            if !self.status.is_empty() {
-                ui.label(&self.status);
-            }
             ui.separator();
             egui::ScrollArea::vertical()
                 .id_salt(("workflow", self.tab))
@@ -268,9 +289,13 @@ impl eframe::App for CagePlateApp {
                 .show(ui, |ui| {
                     ui.push_id(self.tab, |ui| {
                         if self.tab == 0 {
-                            cage_to_plate::show(ui, &mut self.cage, &mut self.config.cage_to_plate);
+                            open_config = cage_to_plate::show(
+                                ui,
+                                &mut self.cage,
+                                &mut self.config.cage_to_plate,
+                            );
                         } else {
-                            plate_to_cage::show(
+                            open_config = plate_to_cage::show(
                                 ui,
                                 &mut self.plate,
                                 &mut self.config.plate_to_cage,
@@ -278,13 +303,30 @@ impl eframe::App for CagePlateApp {
                         }
                     });
                 });
-            if save && let Some(path) = &self.config_path {
-                self.status = match config::save_defaults(path, &self.config) {
-                    Ok(()) => "Defaults saved. No input/output data was saved.".into(),
-                    Err(error) => format!("Could not save defaults: {error}"),
-                };
-            }
         });
+        if open_config && self.dialog.is_none() {
+            self.dialog = Some(config_dialog::ConfigDialog::new(&self.config, self.tab));
+        }
+        if let Some(mut dialog) = self.dialog.take() {
+            let (state, has_header) = if dialog.is_cage() {
+                (&self.cage, self.config.cage_to_plate.has_header)
+            } else {
+                (&self.plate, self.config.plate_to_cage.has_header)
+            };
+            let action = dialog.show(ui.ctx(), state, has_header, self.config_path.as_deref());
+            let close = action.is_some_and(|action| {
+                dialog.handle_action(
+                    action,
+                    &mut self.config,
+                    &mut self.cage,
+                    &mut self.plate,
+                    self.config_path.as_deref(),
+                )
+            });
+            if !close {
+                self.dialog = Some(dialog);
+            }
+        }
     }
 }
 
@@ -293,28 +335,344 @@ fn output_settings(
     ui: &mut egui::Ui,
     config: &mut OutputConfig,
     output: Option<&OutputTable>,
-    base: &[(&str, &str)],
+    base: &[(&str, &str, &str)],
 ) {
-    ui.collapsing("Output column names and order", |ui| {
-        ui.label("Rename final header cells; use arrows to move whole columns with their full header paths. Convert to discover genotype columns.");
-        let mut keys: Vec<String> = output.map_or_else(|| base.iter().map(|(k, _)| k.to_string()).collect(), |t| t.keys.clone());
+    ui.collapsing(settings::section_text("Output columns"), |ui| {
+        let mut keys: Vec<String> = output.map_or_else(
+            || base.iter().map(|(key, _, _)| key.to_string()).collect(),
+            |table| table.keys.clone(),
+        );
+        for (key, _, _) in base {
+            if !keys.iter().any(|k| k == key) {
+                keys.push((*key).into());
+            }
+        }
         let natural = keys.clone();
-        keys.sort_by_key(|key| config.order.iter().position(|k| k == key).unwrap_or(config.order.len() + natural.iter().position(|k| k == key).unwrap_or(0)));
+        keys.sort_by_key(|key| {
+            config
+                .order
+                .iter()
+                .position(|k| k == key)
+                .unwrap_or(config.order.len() + natural.iter().position(|k| k == key).unwrap_or(0))
+        });
         let mut movement = None;
         for (index, key) in keys.iter().enumerate() {
-            let default = output.and_then(|t| t.keys.iter().position(|k| k == key).map(|i| t.headers.last().expect("headers")[i].clone())).unwrap_or_else(|| base.iter().find(|(k, _)| *k == key).map_or(key.as_str(), |(_, label)| label).to_string());
+            let metadata = base.iter().find(|(k, _, _)| *k == key);
+            let meaning = metadata.map_or("Genotype", |(_, meaning, _)| *meaning);
+            let default = metadata
+                .map(|(_, _, name)| name.to_string())
+                .or_else(|| {
+                    output.and_then(|table| {
+                        table
+                            .keys
+                            .iter()
+                            .position(|k| k == key)
+                            .map(|i| table.headers.last().expect("headers")[i].clone())
+                    })
+                })
+                .unwrap_or_else(|| key.clone());
             ui.push_id(key, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(index > 0, egui::Button::new("↑")).clicked() { movement = Some((index, index - 1)); }
-                    if ui.add_enabled(index + 1 < keys.len(), egui::Button::new("↓")).clicked() { movement = Some((index, index + 1)); }
+                    if settings::move_button(ui, true, index > 0).clicked() {
+                        movement = Some((index, index - 1));
+                    }
+                    if settings::move_button(ui, false, index + 1 < keys.len()).clicked() {
+                        movement = Some((index, index + 1));
+                    }
+                    ui.add_sized([110.0, 24.0], egui::Label::new(meaning))
+                        .on_hover_text(key);
                     let mut label = config.labels.get(key).cloned().unwrap_or(default);
-                    if ui.add(egui::TextEdit::singleline(&mut label).desired_width(220.0)).changed() { config.labels.insert(key.clone(), label); }
-                    if ui.small_button("Reset name").clicked() { config.labels.remove(key); }
-                    if let Some(table) = output && let Some(i) = table.keys.iter().position(|k| k == key) { ui.small(table.headers.iter().map(|h| h[i].as_str()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" → ")).on_hover_text(key); }
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut label).desired_width(220.0))
+                        .changed()
+                    {
+                        config.labels.insert(key.clone(), label);
+                    }
                 });
             });
         }
-        if let Some((a, b)) = movement { keys.swap(a, b); config.order = keys; }
-        if ui.button("Reset natural column order").clicked() { config.order.clear(); }
+        if let Some((a, b)) = movement {
+            keys.swap(a, b);
+            config.order = keys;
+        }
+        if ui.button("Reset natural column order").clicked() {
+            config.order.clear();
+        }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(super) fn frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        draw: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 560.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            draw,
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    pub(super) fn text_point(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.pos + egui::vec2(3.0, 3.0))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing text {label}"))
+    }
+
+    pub(super) fn pointer(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn cage_paste_infers_headers_but_plate_input_has_no_headerless_option() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut state = Workflow::default();
+        let mut has_header = true;
+        let output = frame(&ctx, vec![], |ui| state.input_ui(ui, Some(&mut has_header)));
+        let paste = text_point(&output, "Paste / replace");
+        for (text, expected) in [("A\t2\tF", false), ("Cage #\tQTY\tSEX\nA\t1\tF", true)] {
+            frame(
+                &ctx,
+                vec![egui::Event::PointerMoved(paste), pointer(paste, true)],
+                |ui| state.input_ui(ui, Some(&mut has_header)),
+            );
+            frame(&ctx, vec![pointer(paste, false)], |ui| {
+                state.input_ui(ui, Some(&mut has_header))
+            });
+            frame(&ctx, vec![egui::Event::Paste(text.into())], |ui| {
+                state.input_ui(ui, Some(&mut has_header))
+            });
+            assert_eq!(has_header, expected, "{text}");
+            assert_eq!(state.input, text);
+            assert_eq!(state.parsed.as_ref().unwrap().rows.len(), 1);
+        }
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut state = Workflow::default();
+        let output = frame(&ctx, vec![], |ui| state.input_ui(ui, None));
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Input includes header row")));
+        let paste = text_point(&output, "Paste / replace");
+        frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(paste), pointer(paste, true)],
+            |ui| state.input_ui(ui, None),
+        );
+        frame(&ctx, vec![pointer(paste, false)], |ui| {
+            state.input_ui(ui, None)
+        });
+        frame(
+            &ctx,
+            vec![egui::Event::Paste("Cage\t#\tGene\nA (F)\t1\t+/+".into())],
+            |ui| state.input_ui(ui, None),
+        );
+        assert!(state.parsed.as_ref().unwrap().has_header);
+    }
+
+    #[test]
+    fn cage_output_columns_show_field_meanings_without_reset_or_confirmation_controls() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        ctx.style_mut_of(egui::Theme::Light, |style| style.animation_time = 0.0);
+        let table = parse_tsv_with_header("Cage #\tQTY\tSEX\nA\t1\tF", true).unwrap();
+        let mut config = config::CageToPlateConfig::default();
+        let output = frame(&ctx, vec![], |ui| {
+            cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
+        });
+        let section = text_point(&output, "Output columns");
+        frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(section), pointer(section, true)],
+            |ui| cage_to_plate::settings_ui(ui, Some(&table), None, &mut config),
+        );
+        frame(&ctx, vec![pointer(section, false)], |ui| {
+            cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
+        });
+        let output = frame(&ctx, vec![], |ui| {
+            cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
+        });
+        for label in [
+            "Cage ID",
+            "Within-cage ID",
+            "Ear label",
+            "Plate ID",
+            "Well ID",
+            "Global ID",
+            "Cage",
+            "Sample",
+            "Ear",
+            "Plate",
+            "Well",
+            "#",
+        ] {
+            text_point(&output, label);
+        }
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Reset name")));
+        assert!(
+            config.output.labels.is_empty(),
+            "rendering defaults must not insert overrides"
+        );
+        config.layout = config::CageLayout::SeparateColumn;
+        let output = frame(&ctx, vec![], |ui| {
+            cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
+        });
+        text_point(&output, "SEX");
+    }
+
+    #[test]
+    fn both_copy_buttons_use_validated_cache_and_stale_gating() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut state = Workflow {
+            input: "Cage #\tQTY\tSEX\nA\t1\tF".into(),
+            ..Default::default()
+        };
+        state.reparse(true);
+        let table = OutputTable {
+            keys: vec!["cage".into(), "sample".into()],
+            headers: vec![
+                vec!["Outer".into(), "".into()],
+                vec!["Cage".into(), "Sample".into()],
+            ],
+            rows: vec![vec!["A".into(), "1".into()]],
+        };
+        let draw =
+            |ui: &mut egui::Ui, state: &mut Workflow| state.actions(ui, |_| Ok(table.clone()));
+        let output = frame(&ctx, vec![], |ui| draw(ui, &mut state));
+        let convert = text_point(&output, "Convert");
+        frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(convert), pointer(convert, true)],
+            |ui| draw(ui, &mut state),
+        );
+        let output = frame(&ctx, vec![pointer(convert, false)], |ui| {
+            draw(ui, &mut state)
+        });
+        assert!(!state.stale);
+        assert_eq!(state.output_tsv_without_headers, "A\t1\n");
+        let buttons = [
+            (
+                text_point(&output, "Copy output (with headers)"),
+                state.output_tsv.clone(),
+            ),
+            (
+                text_point(&output, "Copy output (without headers)"),
+                state.output_tsv_without_headers.clone(),
+            ),
+        ];
+        for (pos, expected) in &buttons {
+            frame(
+                &ctx,
+                vec![egui::Event::PointerMoved(*pos), pointer(*pos, true)],
+                |ui| draw(ui, &mut state),
+            );
+            let output = frame(&ctx, vec![pointer(*pos, false)], |ui| draw(ui, &mut state));
+            assert!(output.platform_output.commands.iter().any(
+                |command| matches!(command, egui::OutputCommand::CopyText(text) if text == expected)
+            ));
+        }
+        state.invalidate();
+        for (pos, _) in &buttons {
+            frame(
+                &ctx,
+                vec![egui::Event::PointerMoved(*pos), pointer(*pos, true)],
+                |ui| draw(ui, &mut state),
+            );
+            let output = frame(&ctx, vec![pointer(*pos, false)], |ui| draw(ui, &mut state));
+            assert!(
+                !output
+                    .platform_output
+                    .commands
+                    .iter()
+                    .any(|command| matches!(command, egui::OutputCommand::CopyText(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn header_checkbox_reparses_immediately_and_preserves_pasted_text() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut state = Workflow {
+            input: "Cage #\tQTY\tSEX\nA\t1\tF".into(),
+            ..Default::default()
+        };
+        state.reparse(true);
+        state.stale = false;
+        let original = state.input.clone();
+        let mut has_header = true;
+        let render = |events, state: &mut Workflow, has_header: &mut bool| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(720.0, 560.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| state.input_ui(ui, Some(has_header)),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let output = render(vec![], &mut state, &mut has_header);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Input includes header row" => {
+                    Some(text.pos + egui::vec2(4.0, 4.0))
+                }
+                _ => None,
+            })
+            .expect("visible checkbox label");
+        let click = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(
+            vec![egui::Event::PointerMoved(position), click(true)],
+            &mut state,
+            &mut has_header,
+        );
+        render(vec![click(false)], &mut state, &mut has_header);
+        assert!(!has_header && state.stale);
+        assert_eq!(state.input, original);
+        let parsed = state.parsed.as_ref().unwrap();
+        assert!(!parsed.has_header);
+        assert_eq!(parsed.rows.len(), 2);
+        assert_eq!(parsed.source_rows, [1, 2]);
+        render(vec![click(true)], &mut state, &mut has_header);
+        render(vec![click(false)], &mut state, &mut has_header);
+        assert!(has_header);
+        assert_eq!(state.input, original);
+        assert_eq!(state.parsed.as_ref().unwrap().rows, [vec!["A", "1", "F"]]);
+    }
 }

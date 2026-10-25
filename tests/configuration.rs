@@ -2,6 +2,36 @@ use cageplate::config::*;
 use std::fs;
 
 #[test]
+fn header_modes_and_positions_extend_existing_partial_schema() {
+    let old = AppConfig::from_json(r#"{"cage_to_plate":{"cage":"Custom"}}"#).unwrap();
+    assert!(old.cage_to_plate.has_header && old.plate_to_cage.has_header);
+    let mut new = AppConfig::from_json(r#"{"cage_to_plate":{"has_header":false,"cage":{"column":1},"quantity":{"column":2},"sex":{"column":3}}}"#).unwrap();
+    new.cage_to_plate.layout = CageLayout::SeparateColumn;
+    assert!(AppConfig::from_json(r#"{"plate_to_cage":{"has_header":false}}"#).is_err());
+    new.plate_to_cage.groups.push(GroupConfig {
+        column: ColumnRef::Position { column: 7 },
+        ..Default::default()
+    });
+    assert_eq!(
+        AppConfig::from_json(&serde_json::to_string(&new).unwrap()).unwrap(),
+        new
+    );
+    for mapping in [
+        r#"{"column":0}"#,
+        r#"{"column":4097}"#,
+        r#"{"column":-1}"#,
+        r#"{"column":1,"typo":true}"#,
+        r#"{"column":1,"header":"A"}"#,
+        r#"{"column":18446744073709551616}"#,
+    ] {
+        assert!(
+            AppConfig::from_json(&format!(r#"{{"cage_to_plate":{{"cage":{mapping}}}}}"#)).is_err(),
+            "{mapping}"
+        );
+    }
+}
+
+#[test]
 fn absent_file_loads_without_creating_anything_and_save_is_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("new-directory/defaults.json");
@@ -20,6 +50,93 @@ fn absent_file_loads_without_creating_anything_and_save_is_explicit() {
         42
     );
     assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn scoped_saves_preserve_other_saved_settings_not_unsaved_or_stale_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("new/defaults.json");
+    let mut live = AppConfig::default();
+    live.cage_to_plate.plate.start_mouse = 12;
+    live.plate_to_cage.mouse_label = "UNSAVED {ear}".into();
+    save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&live.cage_to_plate)).unwrap();
+    let saved = read_config(&path).unwrap();
+    assert_eq!(saved.cage_to_plate, live.cage_to_plate);
+    assert_eq!(saved.plate_to_cage, PlateToCageConfig::default());
+
+    live.cage_to_plate.plate.start_mouse = 99; // unrelated unsaved edits
+    live.plate_to_cage.mouse_label = "{ear}/{mouse_number}".into();
+    save_workflow_defaults(&path, WorkflowDefaults::PlateToCage(&live.plate_to_cage)).unwrap();
+    let saved = read_config(&path).unwrap();
+    assert_eq!(saved.cage_to_plate.plate.start_mouse, 12);
+    assert_eq!(saved.plate_to_cage, live.plate_to_cage);
+
+    let mut external = saved.clone();
+    external.plate_to_cage.mouse_label = "external {ear}".into();
+    save_defaults(&path, &external).unwrap();
+    save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&live.cage_to_plate)).unwrap();
+    assert_eq!(
+        read_config(&path).unwrap().plate_to_cage,
+        external.plate_to_cage
+    );
+    assert_eq!(
+        read_config(&path).unwrap().cage_to_plate,
+        live.cage_to_plate
+    );
+    assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn scoped_save_failures_preserve_defaults_and_do_not_create_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("defaults.json");
+    let settings = CageToPlateConfig::default();
+    for contents in [
+        "not json",
+        r#"{"schema_version":999}"#,
+        r#"{"unknown":true}"#,
+        r#"{"plate_to_cage":{"tokens":{"hom":"+/+"}}}"#,
+    ] {
+        fs::write(&path, contents).unwrap();
+        assert!(save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&settings)).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+    }
+    save_defaults(&path, &AppConfig::default()).unwrap();
+    let original = fs::read(&path).unwrap();
+    let mut invalid = settings.clone();
+    invalid.plate.rows = 0;
+    assert!(save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&invalid)).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let missing = temp.path().join("absent/defaults.json");
+    assert!(save_workflow_defaults(&missing, WorkflowDefaults::CageToPlate(&invalid)).is_err());
+    assert!(!missing.parent().unwrap().exists());
+    assert!(save_workflow_defaults(temp.path(), WorkflowDefaults::CageToPlate(&settings)).is_err());
+    let blocked = path.join("defaults.json"); // a regular file cannot be a parent
+    assert!(save_workflow_defaults(&blocked, WorkflowDefaults::CageToPlate(&settings)).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn scoped_save_permission_failure_keeps_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("defaults.json");
+    save_defaults(&path, &AppConfig::default()).unwrap();
+    let original = fs::read(&path).unwrap();
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    // Elevated test runners can bypass directory permissions; only assert denial
+    // if the OS actually enforces it for this process.
+    let probe = temp.path().join("probe");
+    if fs::write(&probe, "probe").is_err() {
+        let updated = CageToPlateConfig {
+            ears: vec!["custom".into()],
+            ..Default::default()
+        };
+        assert!(save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&updated)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 #[test]

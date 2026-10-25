@@ -2,14 +2,18 @@
 
 ## Persistence
 
-**Save as default** explicitly saves `AppConfig` JSON. Startup automatically loads that one file:
+The tool's built-ins (`Default` implementations) and the user's saved defaults are distinct. Startup loads user `AppConfig` JSON from one file, falling back to built-ins if absent/invalid:
 
 - Windows: `%APPDATA%\CagePlate\defaults.json` (standard roaming user config directory).
 - Linux/WSL: `$XDG_CONFIG_HOME/CagePlate/defaults.json`, normally `~/.config/CagePlate/defaults.json`.
 
-The GUI displays the actual path. There is no implicit exit/autosave. **Restore built-ins** resets in-memory settings only; click Save as default to persist the reset. Neither pasted records, output tables, previews, clipboard contents nor input history are serialized.
+Each workflow's **Config** pop-up displays the actual path and edits a private draft. **Apply** validates/activates only that draft and closes; **Cancel**, Escape, or backdrop dismissal discards it. **Reset** stages only that workflow's tool built-ins, not the user's saved defaults; Apply activates without saving. **Save as default** validates, merges only this workflow into the latest valid file, saves atomically, then applies it and keeps the pop-up open. The other workflow's saved values are preserved, never replaced with its unsaved edits. Cancel after a successful save discards only subsequent edits.
 
-Files have `schema_version: 1`. Missing fields use built-ins; unknown fields, unsupported schema versions and invalid settings are rejected. Missing files are normal. Corrupt/inaccessible/future-version files trigger a visible warning and built-in fallback without overwriting the original. Explicit saving validates first and uses a same-directory temporary file plus atomic replacement. Configs are capped at 1 MiB.
+There is no implicit exit/autosave. Draft-only edits do not stale previews; input/header-mode changes and changed applied settings do. Neither pasted records, output tables, previews, clipboard contents nor input history are serialized.
+
+Files have `schema_version: 1`. Missing fields use built-ins; unknown fields, unsupported schema versions and invalid settings are rejected. Missing files are normal. Corrupt/inaccessible/future-version files trigger a visible warning and built-in fallback without overwriting the original. Saving validates first and uses a same-directory temporary file plus atomic replacement. GUI workflow-scoped saving refuses to overwrite an unreadable, corrupt, or unsupported existing file; fix/recover that file explicitly before saving. Failed saves leave active settings unchanged and the draft available for correction. Configs are capped at 1 MiB.
+
+Schema version remains 1: old partial files still load and omitted `has_header` fields mean true. Plate to Cage now requires `has_header: true`; old files that explicitly set it false are rejected with a visible recovery warning and preserved on disk. Correct that field and remap real header/gene names before using such a file. Older app versions reject new fields/forms under their strict unknown-field policy; do not use newly saved defaults with an older binary without removing unsupported settings.
 
 The CLI never reads this implicit GUI file. It uses built-ins or an explicit `--config` path for reproducibility.
 
@@ -21,28 +25,30 @@ Cage → Plate fields:
 
 | Fields | Meaning/default |
 | --- | --- |
+| `has_header` | `true` initially; the cage GUI infers it after a paste, with manual checkbox override. False treats every nonempty record as data. CLI mode stays explicit. |
 | `cage`, `quantity`, `sex` | Column mappings: `Cage #`, `QTY`, `SEX`. |
 | `plate.rows`, `plate.columns` | 8 × 12; each dimension 1..=1024. |
 | `plate.traversal`, `plate.well_style` | `column_wise`, `number_letter`; alternatives `row_wise`, `letter_number`. |
 | `plate.start_row`, `plate.start_column` | Zero-based first-well position, default 0/0. GUI shows one-based row/column indices. |
 | `plate.start_plate`, `plate.start_mouse` | Positive global starts, default 1/1. |
 | `ears` | Empty list = automatic inferred prefix; otherwise explicit nonempty unique labels in assignment order. |
-| `layout` | `newline` or `inline`; singleton always inline. |
+| `layout` | `newline` (Sex on a new line), `inline` (Inline sex), or `separate_column` (Separate column). Singletons use inline fallback only in the first two layouts. |
 | `output` | Stable-key ordering and final-header label overrides. |
 
 Plate → Cage fields:
 
 | Fields | Meaning/default |
 | --- | --- |
+| `has_header` | Must be `true`; false is rejected because source/genotype headers are required. |
 | `cage`, `ear`, `mouse_number` | Required mappings: `Cage`, `Ear`, `#`. |
 | `sex`, `within_cage`, `plate`, `well`, `remarks` | Optional mappings, JSON `null` disables each. Defaults: null, `Sample`, `Plate`, `Well`, null. Unmap absent optional columns in the GUI. |
-| `layout`, `sex_tokens` | `sparse` (alternatives `inline`, `repeated`), markers `["F","M"]`. Repeated requires separate sex. |
+| `layout`, `sex_tokens` | `sparse` (Sex on a new line), `inline` (Inline sex), or `repeated` (Separate column). Markers `["F","M"]`. Repeated requires separate sex. |
 | `groups` | Ordered gene definitions, empty by default until the user selects genes. Conversion requires 1..=8. |
 | `tokens` | Four distinct accepted strings: hom `-/-`, het `+/-`, wt `+/+`, unknown `?`. Blank is implicitly unknown. |
 | `mouse_label` | `{ear}{mouse_number}`; validated field template. |
 | `output` | Stable-key ordering and final-header label overrides. |
 
-Each group has `column`, optional display `name` (blank = source header), `mode` (`existing`/`all`), `order` (default `["hom","het","wt"]`), and `labels` (state-keyed header overrides, such as `{"wt":"WT"}`). Changing tokens or display names does not change semantic states.
+Each group has `column`, optional display `name` (blank = source header or `Column N`), `mode` (`existing`/`all`), `order` (default `["hom","het","wt"]`), and `labels` (state-keyed header overrides, such as `{"wt":"WT"}`). Changing tokens or display names does not change semantic states.
 
 ## Column references and output identities
 
@@ -52,7 +58,34 @@ A mapping is normally a string (`"Cage"`). Duplicated headers use a zero-based o
 { "header": "Gene", "occurrence": 1 }
 ```
 
-This means the second `Gene`, not the second column in the table. Numeric source positions are never silently reused. A stale/missing/ambiguous saved mapping must be corrected for the current paste.
+This means the second `Gene`, not the second column in the table. Headerless mappings instead use an explicit **one-based** column object:
+
+```json
+{ "column": 3 }
+```
+
+This is always the third column, checked against the current width. Valid numbers are 1..=4096; source reordering requires reviewing positional mappings. Synthetic `Column N` labels are display-only and never resolve named references. Headered GUI selections remain name/occurrence based; headerless selections are positional. Switching modes preserves text but does not guess conversions of old mappings: correct missing/incompatible mappings in Config. The GUI uses selection lists in both cases: source names with headers, **Column N** without headers. Before a paste, the lists are disabled because no source columns are known. Disable absent optional sources with **Not used**. Name-based suggestions are disabled for headerless cage data; Plate to Cage does not allow headerless data.
+
+For headerless cage inventory columns cage/count/sex, use:
+
+```json
+{
+  "cage_to_plate": {
+    "has_header": false,
+    "cage": { "column": 1 },
+    "quantity": { "column": 2 },
+    "sex": { "column": 3 }
+  }
+}
+```
+
+In Cage to Plate, each paste updates the checkbox from the first nonempty TSV record: a finite numeric cell (including trimmed, signed, decimal or scientific notation) means headerless; otherwise headered. Digits inside `Cage1` or `5XFAD` are not numbers. The checkbox remains manually editable; ordinary typing does not rerun the heuristic. Inference never guesses source mappings. Plate to Cage hides the option and always requires headers. The CLI uses explicit JSON rather than this paste heuristic or implicit user defaults.
+
+Both previews retain headers. **Copy output (with headers)** copies them; **Copy output (without headers)** omits every header level. Both are disabled while output is absent/stale.
+
+Cage Config sections are **Input columns** and **Output format**, with **Cage sex layout**, **Plate layout**, **Ear labels**, and **Output columns**. Output field meanings (Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID) appear before the editable default names (`Cage`, `Sample`, `Ear`, `Plate`, `Well`, `#`). Separate column adds `SEX` immediately after Cage. Per-field Reset name controls and confirmation text are removed; the workflow's Reset still restores all tool defaults.
+
+Plate Config's **Input columns** contains Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID, Remarks, Sex, then **Genotype (level 1)**. **Add genotype** adds another level selector; move/remove controls operate on these input rows. The **Genotypes** section automatically shows a card per selected gene with **Include genotypes** and **Display names**. A newly added blank level must be selected or removed before Apply/save.
 
 `output` supports:
 
@@ -84,4 +117,4 @@ Listed current keys move first; unlisted keys append in natural order; stale key
 
 ## Configuration APIs
 
-`AppConfig::{validate, from_json}` check complete/partial documents and semantics. `ColumnRef::validate` checks source names/occurrences. `default_path` locates but never creates directories; `read_config` explicitly reads a validated file. `load_defaults` returns `LoadedDefaults { config, warning }`, preserving invalid files. `save_defaults` is the only persistence operation and validates before writing. These APIs are tested only in temporary directories, never against the developer's actual defaults.
+`AppConfig::{validate, from_json}` check complete/partial documents and semantics. `ColumnRef::validate` checks source names/occurrences/positions; `header()` returns an optional source name and `display_name()` provides a human-readable `Column N` fallback. `default_path` locates but never creates directories; `read_config` explicitly reads a validated file. `load_defaults` returns `LoadedDefaults { config, warning }`, preserving invalid files. `save_defaults` validates and writes a complete config; `save_workflow_defaults(path, WorkflowDefaults::CageToPlate(...))` (or `PlateToCage`) merges a single workflow into the latest valid saved config and reuses the atomic writer. All persistence tests use temporary directories, never the developer's actual defaults.

@@ -5,42 +5,67 @@ use ::cageplate::{
 };
 use eframe::egui;
 
-pub(super) fn show(ui: &mut egui::Ui, state: &mut Workflow, config: &mut CageToPlateConfig) {
-    state.input_ui(ui);
-    let before = config.clone();
-    ui.heading("2. Map source columns");
-    if let Some(table) = &state.parsed {
-        if ui.button("Suggest common column mappings").clicked() {
-            if let Some(c) = settings::suggest(table, &["Cage #", "Cage", "Cage_id", "Cage ID"]) {
-                config.cage = c;
-            }
-            if let Some(c) =
-                settings::suggest(table, &["QTY", "Quantity", "Count", "Number of mice"])
-            {
-                config.quantity = c;
-            }
-            if let Some(c) = settings::suggest(table, &["SEX", "Sex"]) {
-                config.sex = c;
-            }
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    state: &mut Workflow,
+    config: &mut CageToPlateConfig,
+) -> bool {
+    state.input_ui(ui, Some(&mut config.has_header));
+    let open_config = ui
+        .button("Config")
+        .on_hover_text("Source mappings, assignment and output settings")
+        .clicked();
+    state.actions(ui, |table| cage_to_plate::convert(table, config));
+    open_config
+}
+
+pub(super) fn settings_ui(
+    ui: &mut egui::Ui,
+    table: Option<&::cageplate::model::InputTable>,
+    _output: Option<&::cageplate::model::OutputTable>,
+    config: &mut CageToPlateConfig,
+) {
+    settings::section_title(ui, "Input columns");
+    if let Some(table) = table
+        && ui
+            .add_enabled(
+                config.has_header,
+                egui::Button::new("Suggest common column mappings"),
+            )
+            .clicked()
+    {
+        if let Some(c) = settings::suggest(table, &["Cage #", "Cage", "Cage_id", "Cage ID"]) {
+            config.cage = c;
         }
-        settings::column(ui, "Cage ID", &mut config.cage, table);
-        settings::column(ui, "Mouse count", &mut config.quantity, table);
-        settings::column(ui, "Sex", &mut config.sex, table);
-    } else {
-        ui.label("Paste a valid table to select its source columns.");
+        if let Some(c) = settings::suggest(table, &["QTY", "Quantity", "Count", "Number of mice"]) {
+            config.quantity = c;
+        }
+        if let Some(c) = settings::suggest(table, &["SEX", "Sex"]) {
+            config.sex = c;
+        }
     }
-    ui.heading("3. Configure assignment");
+    settings::column(ui, "Cage ID", &mut config.cage, table, config.has_header);
+    settings::column(
+        ui,
+        "Mouse count",
+        &mut config.quantity,
+        table,
+        config.has_header,
+    );
+    settings::column(ui, "Sex", &mut config.sex, table, config.has_header);
+    settings::section_title(ui, "Output format");
     settings::enum_combo(
         ui,
-        "Cage display",
+        "Cage sex layout",
         &mut config.layout,
         &[
-            (CageLayout::Newline, "Sex on second mouse row"),
-            (CageLayout::Inline, "Cage (Sex)"),
+            (CageLayout::Newline, "Sex on a new line"),
+            (CageLayout::Inline, "Inline sex"),
+            (CageLayout::SeparateColumn, "Separate column"),
         ],
     );
-    ui.small("Singleton cages always use Cage (Sex). Cages may span plates.");
-    ui.collapsing("Plate dimensions, order, and starting position", |ui| {
+    ui.small("New-line/inline layouts show singleton cages inline. Separate column repeats cage and sex on each mouse row.");
+    ui.collapsing(settings::section_text("Plate layout"), |ui| {
         egui::Grid::new("plate").num_columns(2).show(ui, |ui| {
             ui.label("Lettered rows (A, B, …)");
             ui.add(egui::DragValue::new(&mut config.plate.rows).range(1..=1024));
@@ -84,8 +109,8 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut Workflow, config: &mut CageToP
             ],
         );
     });
-    ui.collapsing("Ear labels and their order", |ui| {
-        let maximum = state.parsed.as_ref().and_then(|table| read_cages(table, config).ok()).and_then(|cages| cages.iter().map(|c| c.quantity).max()).filter(|n| *n <= ::cageplate::model::MAX_MICE);
+    ui.collapsing(settings::section_text("Ear labels"), |ui| {
+        let maximum = table.and_then(|table| read_cages(table, config).ok()).and_then(|cages| cages.iter().map(|c| c.quantity).max()).filter(|n| *n <= ::cageplate::model::MAX_MICE);
         if config.ears.is_empty() {
             ui.label(maximum.map_or("Automatic: map valid input counts to infer the required list.".into(), |n| format!("Automatic: {n} labels needed for the largest cage. R, L, RR, RL, LL, RRR, RRL, RLL, LLL, …")));
             if ui.add_enabled(maximum.is_some(), egui::Button::new("Customize inferred order")).clicked() { config.ears = default_ears(maximum.unwrap_or(0)).unwrap_or_default(); }
@@ -97,21 +122,16 @@ pub(super) fn show(ui: &mut egui::Ui, state: &mut Workflow, config: &mut CageToP
             if ui.add_enabled(maximum.is_some(), egui::Button::new("Regenerate defaults for current input")).clicked() { config.ears = default_ears(maximum.unwrap_or(0)).unwrap_or_default(); }
         }
     });
-    output_settings(
-        ui,
-        &mut config.output,
-        state.output.as_ref(),
-        &[
-            ("cage", "Cage"),
-            ("sample", "Sample"),
-            ("ear", "Ear"),
-            ("plate", "Plate"),
-            ("well", "Well"),
-            ("mouse_number", "#"),
-        ],
-    );
-    if *config != before {
-        state.invalidate();
+    let mut columns = vec![
+        ("cage", "Cage ID", "Cage"),
+        ("sample", "Within-cage ID", "Sample"),
+        ("ear", "Ear label", "Ear"),
+        ("plate", "Plate ID", "Plate"),
+        ("well", "Well ID", "Well"),
+        ("mouse_number", "Global ID", "#"),
+    ];
+    if config.layout == CageLayout::SeparateColumn {
+        columns.insert(1, ("sex", "Sex", "SEX"));
     }
-    state.actions(ui, |table| cage_to_plate::convert(table, config));
+    output_settings(ui, &mut config.output, None, &columns);
 }

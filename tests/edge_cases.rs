@@ -3,7 +3,7 @@ use cageplate::{
     config::*,
     model::*,
     plate_to_cage,
-    tsv::{parse_tsv, write_tsv},
+    tsv::{parse_tsv, parse_tsv_with_header, write_tsv},
 };
 
 fn group(column: &str, mode: CategoryMode) -> GroupConfig {
@@ -24,6 +24,196 @@ fn repeated(groups: Vec<GroupConfig>) -> PlateToCageConfig {
         groups,
         ..Default::default()
     }
+}
+
+#[test]
+fn headerless_records_keep_first_row_quoting_and_physical_positions() {
+    let table = parse_tsv_with_header(
+        "\u{feff}\r\nA\t\"note\tone\ncontinued\"\t\r\n\t\t\r\nB\ttext\t\r\n",
+        false,
+    )
+    .unwrap();
+    assert!(!table.has_header);
+    assert_eq!(table.headers, ["Column 1", "Column 2", "Column 3"]);
+    assert_eq!(table.rows[0], ["A", "note\tone\ncontinued", ""]);
+    assert_eq!(table.rows[1], ["B", "text", ""]);
+    assert_eq!(table.source_rows, [2, 5]);
+    table.validate().unwrap();
+    let single = parse_tsv_with_header("A\t1\tF", false).unwrap();
+    assert_eq!(single.rows.len(), 1);
+    assert_eq!(single.source_rows, [1]);
+    for bad in ["", "\t\n", "A\t1\nB", "A\t\"unclosed", "A\t\"x\"oops"] {
+        assert!(parse_tsv_with_header(bad, false).is_err(), "{bad:?}");
+    }
+    assert!(
+        parse_tsv_with_header("A\t1\nB", false)
+            .unwrap_err()
+            .to_string()
+            .contains("line 2")
+    );
+}
+
+#[test]
+fn positional_mappings_are_explicit_bounded_and_never_synthetic_names() {
+    let table = parse_tsv_with_header("A\t1\tF", false).unwrap();
+    let position = ColumnRef::from_index(&table, 2).unwrap();
+    assert_eq!(position, ColumnRef::Position { column: 3 });
+    assert_eq!(position.resolve(&table).unwrap(), 2);
+    assert_eq!(position.display_name(), "Column 3");
+    assert_eq!(position.header(), None);
+    for column in [0, 4, MAX_COLUMNS + 1, usize::MAX] {
+        assert!(ColumnRef::Position { column }.resolve(&table).is_err());
+    }
+    assert!(ColumnRef::from("Column 1").resolve(&table).is_err());
+    assert!(
+        ColumnRef::Occurrence {
+            header: "Column 1".into(),
+            occurrence: 0
+        }
+        .resolve(&table)
+        .is_err()
+    );
+    assert!(ColumnRef::from_index(&table, 3).is_err());
+    let narrow = parse_tsv_with_header("A\t1", false).unwrap();
+    assert!(position.resolve(&narrow).is_err());
+    let reordered = parse_tsv("Sex\tCage\tN\nF\tA\t1").unwrap();
+    assert_eq!(ColumnRef::from("Cage").resolve(&reordered).unwrap(), 1);
+    assert_eq!(
+        ColumnRef::from_index(&reordered, 1).unwrap(),
+        ColumnRef::from("Cage")
+    );
+}
+
+#[test]
+fn headerless_limits_and_conversion_diagnostics_are_preserved() {
+    assert!(parse_tsv_with_header(&vec!["x"; MAX_COLUMNS + 1].join("\t"), false).is_err());
+    assert!(parse_tsv_with_header(&"x\n".repeat(MAX_MICE + 1), false).is_err());
+    let wide = vec!["x"; 2_000].join("\t") + "\n";
+    assert!(
+        parse_tsv_with_header(&wide.repeat(1_000), false)
+            .unwrap_err()
+            .to_string()
+            .contains("cell safety limit")
+    );
+    let config = CageToPlateConfig {
+        has_header: false,
+        cage: ColumnRef::Position { column: 1 },
+        quantity: ColumnRef::Position { column: 2 },
+        sex: ColumnRef::Position { column: 3 },
+        ..Default::default()
+    };
+    let table = parse_tsv_with_header("A\tnope\tF", false).unwrap();
+    let error = cage_to_plate::convert(&table, &config)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("row 1") && error.contains("Column 2") && error.contains("nope"),
+        "{error}"
+    );
+}
+
+#[test]
+fn separate_sex_column_repeats_ids_preserves_assignments_and_roundtrips() {
+    let inventory = parse_tsv("Cage #\tQTY\tSEX\nA\t2\tF\nB\t1\tM").unwrap();
+    let mut config = CageToPlateConfig {
+        layout: CageLayout::SeparateColumn,
+        ..Default::default()
+    };
+    let mut output = cage_to_plate::convert(&inventory, &config).unwrap();
+    assert_eq!(
+        output.headers[0],
+        ["Cage", "SEX", "Sample", "Ear", "Plate", "Well", "#"]
+    );
+    assert_eq!(
+        output
+            .rows
+            .iter()
+            .map(|row| row[0].as_str())
+            .collect::<Vec<_>>(),
+        ["A", "A", "B"]
+    );
+    assert_eq!(
+        output
+            .rows
+            .iter()
+            .map(|row| row[1].as_str())
+            .collect::<Vec<_>>(),
+        ["F", "F", "M"]
+    );
+    assert_eq!(
+        output
+            .rows
+            .iter()
+            .map(|row| row[5].as_str())
+            .collect::<Vec<_>>(),
+        ["1A", "1B", "1C"]
+    );
+    assert_eq!(output.rows[2][6], "3");
+    config.output.order = vec!["sex".into(), "cage".into()];
+    config.output.labels.insert("sex".into(), "Gender".into());
+    let renamed = cage_to_plate::convert(&inventory, &config).unwrap();
+    assert_eq!(&renamed.headers[0][..2], ["Gender", "Cage"]);
+    assert_eq!(&renamed.rows[2][..2], ["M", "B"]);
+    output.keys.push("gene".into());
+    output.headers[0].push("Gene".into());
+    for row in &mut output.rows {
+        row.push("+/+".into());
+    }
+    let input = parse_tsv(&write_tsv(&output).unwrap()).unwrap();
+    let summary = PlateToCageConfig {
+        layout: InputLayout::Repeated,
+        sex: Some("SEX".into()),
+        groups: vec![group("Gene", CategoryMode::Existing)],
+        ..Default::default()
+    };
+    let mice = plate_to_cage::normalize_mouse_rows(&input, &summary).unwrap();
+    assert_eq!(mice.len(), 3);
+    assert_eq!(mice[2].cage_id, "B");
+    assert_eq!(mice[2].sex, "M");
+    let result = plate_to_cage::convert(&input, &summary).unwrap();
+    assert_eq!(result.rows.len(), 2);
+    assert_eq!(result.rows[0][1], "2");
+    assert_eq!(result.rows[1][1], "1");
+}
+
+#[test]
+fn positional_gene_identity_is_independent_of_display_and_hierarchy() {
+    let table = parse_tsv("Cage\tSex\tEar\t#\tGene A\tGene B\nA\tF\tR\t1\t-/-\t+/+").unwrap();
+    let mut cfg = PlateToCageConfig {
+        has_header: true,
+        cage: ColumnRef::Position { column: 1 },
+        sex: Some(ColumnRef::Position { column: 2 }),
+        ear: ColumnRef::Position { column: 3 },
+        mouse_number: ColumnRef::Position { column: 4 },
+        layout: InputLayout::Repeated,
+        within_cage: None,
+        plate: None,
+        well: None,
+        groups: [5, 6]
+            .into_iter()
+            .map(|column| GroupConfig {
+                column: ColumnRef::Position { column },
+                mode: CategoryMode::All,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg.groups[0].label(Genotype::Hom, &cfg.tokens),
+        "Column 5, -/-"
+    );
+    let mut original = plate_to_cage::convert(&table, &cfg).unwrap().keys;
+    assert!(original.iter().any(|key| key.contains("\"column\":5")));
+    for group in &mut cfg.groups {
+        group.name = "Renamed".into();
+        group.order.reverse();
+    }
+    cfg.groups.reverse();
+    let mut renamed = plate_to_cage::convert(&table, &cfg).unwrap().keys;
+    original.sort();
+    renamed.sort();
+    assert_eq!(original, renamed);
 }
 
 #[test]
@@ -123,6 +313,7 @@ fn multi_gene_roundtrip_conserves_every_mouse_and_unknown() {
     .unwrap();
     assert_eq!(expanded.rows.len(), 210);
     let mut table = InputTable {
+        has_header: true,
         headers: expanded.headers[0].clone(),
         rows: expanded.rows,
         source_rows: (2..212).collect(),

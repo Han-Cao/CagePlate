@@ -180,7 +180,14 @@ pub fn expand_cages(cages: &[Cage], config: &CageToPlateConfig) -> Result<Vec<Mo
             .ok_or_else(|| Error::new(format!("Expansion exceeds {MAX_MICE} mice")))?;
         maximum = maximum.max(cage.quantity);
     }
-    check_size(total + 1, 6)?;
+    check_size(
+        total + 1,
+        if config.layout == CageLayout::SeparateColumn {
+            7
+        } else {
+            6
+        },
+    )?;
     config
         .plate
         .start_mouse
@@ -221,18 +228,23 @@ pub fn expand_cages(cages: &[Cage], config: &CageToPlateConfig) -> Result<Vec<Mo
 
 /// Convert a mapped cage TSV table to the configured per-mouse output table.
 ///
-/// Singletons always render `Cage (Sex)`. Other cages use the selected sparse or
-/// inline layout. Output naming/reordering never changes assignment identities.
+/// Sparse/inline layouts render singletons as `Cage (Sex)`. Separate-column
+/// layout repeats the cage ID and sex on every row, including singletons.
+/// Output naming/reordering never changes assignment identities.
 pub fn convert(table: &InputTable, config: &CageToPlateConfig) -> Result<OutputTable> {
     let cages = read_cages(table, config)?;
     let mice = expand_cages(&cages, config)?;
     let quantities: HashMap<_, _> = cages.iter().map(|c| (c.id.as_str(), c.quantity)).collect();
+    let separate = config.layout == CageLayout::SeparateColumn;
     let rows = mice
         .into_iter()
         .map(|m| {
             let index = m.within_cage.expect("generated index");
             let inline = config.layout == CageLayout::Inline || quantities[m.cage_id.as_str()] == 1;
-            let cage_cell = if index == 1 {
+            let sex = m.sex.clone();
+            let cage_cell = if separate {
+                m.cage_id
+            } else if index == 1 {
                 if inline {
                     format!("{} ({})", m.cage_id, m.sex)
                 } else {
@@ -243,25 +255,33 @@ pub fn convert(table: &InputTable, config: &CageToPlateConfig) -> Result<OutputT
             } else {
                 String::new()
             };
-            vec![
+            let mut row = vec![
                 cage_cell,
                 index.to_string(),
                 m.ear,
                 m.plate.unwrap_or_default(),
                 m.well.unwrap_or_default(),
                 m.mouse_number.to_string(),
-            ]
+            ];
+            if separate {
+                row.insert(1, sex);
+            }
+            row
         })
         .collect();
+    let mut keys = ["cage", "sample", "ear", "plate", "well", "mouse_number"]
+        .map(String::from)
+        .to_vec();
+    let mut headers = ["Cage", "Sample", "Ear", "Plate", "Well", "#"]
+        .map(String::from)
+        .to_vec();
+    if separate {
+        keys.insert(1, "sex".into());
+        headers.insert(1, "SEX".into());
+    }
     OutputTable {
-        keys: ["cage", "sample", "ear", "plate", "well", "mouse_number"]
-            .map(String::from)
-            .to_vec(),
-        headers: vec![
-            ["Cage", "Sample", "Ear", "Plate", "Well", "#"]
-                .map(String::from)
-                .to_vec(),
-        ],
+        keys,
+        headers: vec![headers],
         rows,
     }
     .present(&config.output)
