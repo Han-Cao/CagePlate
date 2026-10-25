@@ -1,0 +1,20 @@
+Cage	Sample	Ear	Plate	Well	#	LSL	5XFAD	Remarks
+LSF-301	1	R	1	1A	1	-/-	+/+	test remark
+F	2	L	1	1B	2	-/-	+/+	
+	3	RR	1	1C	3	-/-	+/+	
+	4	RL	1	1D	4	-/-	+/+	
+	5	LL	1	1E	5	-/-	+/+	
+LSF-302	1	R	1	1F	6	-/-	+/+	
+F	2	L	1	1G	7	-/-	+/+	
+	3	RR	1	1H	8	-/-	+/-	
+	4	RL	1	2A	9	-/-	+/-	
+	5	LL	1	2B	10	-/-	+/-	
+LSF-303	1	R	1	2C	11	-/-	+/+	
+M	2	L	1	2D	12	-/-	+/+	
+	3	RR	1	2E	13	-/-	+/+	
+LSF-304	1	R	1	2F	14	-/-	+/+	
+M	2	L	1	2G	15	-/-	+/+	
+	3	RR	1	2H	16	-/-	+/-	
+LSF-305	1	R	1	3A	17	-/-	+/+	
+F	2	L	1	3B	18	-/-	+/-	
+	3	RR	1	3C	19	-/-	+/-	

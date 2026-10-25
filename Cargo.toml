@@ -1,0 +1,35 @@
+[package]
+name = "cageplate"
+version = "0.1.0"
+rust-version = "1.95"
+description = "Clipboard-based cage and DNA plate table conversions"
+license = "MIT"
+default-run = "cageplate"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe"]
+
+[dependencies]
+csv = "1.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+directories = "6.0"
+tempfile = "3.23"
+# Native clipboard is optional in eframe 0.37; keep it enabled for GUI I/O.
+eframe = { version = "=0.37.0", optional = true, default-features = false, features = ["clipboard", "default_fonts", "glow", "x11", "wayland"] }
+
+[[bin]]
+name = "cageplate"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "cageplate-cli"
+path = "src/bin/cageplate-cli.rs"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true

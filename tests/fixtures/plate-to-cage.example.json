@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "plate_to_cage": {
+    "remarks": "Remarks",
+    "groups": [
+      { "column": "5XFAD", "mode": "existing" },
+      { "column": "LSL", "mode": "all", "labels": { "wt": "WT" } }
+    ]
+  }
+}

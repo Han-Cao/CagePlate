@@ -1,0 +1,7 @@
+			5XFAD, +/-	5XFAD, +/-	5XFAD, +/-	5XFAD, +/+	5XFAD, +/+	5XFAD, +/+		
+Cage #	QTY	SEX	LSL, -/-	LSL, +/-	WT	LSL, -/-	LSL, +/-	WT	?	Remarks
+LSF-301	5	F				R1, L2, RR3, RL4, LL5				R: test remark
+LSF-302	5	F	RR8, RL9, LL10			R6, L7				
+LSF-303	3	M				R11, L12, RR13				
+LSF-304	3	M	RR16			R14, L15				
+LSF-305	3	F	L18, RR19			R17				
