@@ -58,21 +58,21 @@ fn scoped_saves_preserve_other_saved_settings_not_unsaved_or_stale_values() {
     let path = temp.path().join("new/defaults.json");
     let mut live = AppConfig::default();
     live.cage_to_plate.plate.start_mouse = 12;
-    live.plate_to_cage.mouse_label = "UNSAVED {ear}".into();
+    live.plate_to_cage.mouse_label = "UNSAVED {ear_label}".into();
     save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&live.cage_to_plate)).unwrap();
     let saved = read_config(&path).unwrap();
     assert_eq!(saved.cage_to_plate, live.cage_to_plate);
     assert_eq!(saved.plate_to_cage, PlateToCageConfig::default());
 
     live.cage_to_plate.plate.start_mouse = 99; // unrelated unsaved edits
-    live.plate_to_cage.mouse_label = "{ear}/{mouse_number}".into();
+    live.plate_to_cage.mouse_label = "{ear_label}/{global_id}".into();
     save_workflow_defaults(&path, WorkflowDefaults::PlateToCage(&live.plate_to_cage)).unwrap();
     let saved = read_config(&path).unwrap();
     assert_eq!(saved.cage_to_plate.plate.start_mouse, 12);
     assert_eq!(saved.plate_to_cage, live.plate_to_cage);
 
     let mut external = saved.clone();
-    external.plate_to_cage.mouse_label = "external {ear}".into();
+    external.plate_to_cage.mouse_label = "external {ear_label}".into();
     save_defaults(&path, &external).unwrap();
     save_workflow_defaults(&path, WorkflowDefaults::CageToPlate(&live.cage_to_plate)).unwrap();
     assert_eq!(
@@ -84,6 +84,69 @@ fn scoped_saves_preserve_other_saved_settings_not_unsaved_or_stale_values() {
         live.cage_to_plate
     );
     assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn plate_to_cage_scoped_save_filters_genotype_mappings_and_merges_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("defaults.json");
+    let mut previous = AppConfig::default();
+    previous.plate_to_cage.genotype_display_defaults.insert(
+        "untouched".into(),
+        GenotypeDisplayConfig {
+            name: "Keep me".into(),
+            ..Default::default()
+        },
+    );
+    save_defaults(&path, &previous).unwrap();
+
+    let mut live = AppConfig::default();
+    live.plate_to_cage.groups = vec![GroupConfig {
+        column: "Gene   A".into(),
+        name: "Gene A display".into(),
+        mode: CategoryMode::All,
+        labels: [(cageplate::model::Genotype::Wt, "WT".into())].into(),
+        ..Default::default()
+    }];
+    live.plate_to_cage.output.order =
+        vec!["genotype:stale".into(), "cage".into(), "unknown".into()];
+    live.plate_to_cage
+        .output
+        .labels
+        .insert("genotype:stale".into(), "Stale genotype".into());
+    live.plate_to_cage
+        .output
+        .labels
+        .insert("unknown".into(), "Uncalled".into());
+
+    save_workflow_defaults(&path, WorkflowDefaults::PlateToCage(&live.plate_to_cage)).unwrap();
+    let saved = read_config(&path).unwrap();
+    assert!(saved.plate_to_cage.groups.is_empty());
+    assert_eq!(saved.plate_to_cage.output.order, ["cage", "unknown"]);
+    assert!(
+        !saved
+            .plate_to_cage
+            .output
+            .labels
+            .contains_key("genotype:stale")
+    );
+    assert_eq!(saved.plate_to_cage.output.labels["unknown"], "Uncalled");
+    assert_eq!(
+        saved
+            .plate_to_cage
+            .genotype_display_profile("  GENE  A ")
+            .unwrap()
+            .name,
+        "Gene A display"
+    );
+    assert_eq!(
+        saved
+            .plate_to_cage
+            .genotype_display_profile("UNTOUCHED")
+            .unwrap()
+            .name,
+        "Keep me"
+    );
 }
 
 #[test]
@@ -166,7 +229,7 @@ fn all_settings_roundtrip_without_animal_data() {
         labels: [(cageplate::model::Genotype::Wt, "WT".into())].into(),
         ..Default::default()
     }];
-    config.plate_to_cage.mouse_label = "{ear}/{plate}/{well}".into();
+    config.plate_to_cage.mouse_label = "{cage_id}/{ear_label}/{global_id}".into();
     config.plate_to_cage.output.order = vec!["sex".into(), "cage".into()];
     config
         .plate_to_cage

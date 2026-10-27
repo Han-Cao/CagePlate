@@ -271,6 +271,78 @@ impl Default for GroupConfig {
     }
 }
 
+/// Presentation settings remembered for a genotype source name.
+///
+/// The source column is intentionally absent: saved profiles can be reused when
+/// the same genotype header appears in a future input table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GenotypeDisplayConfig {
+    /// Optional group/header display name.
+    pub name: String,
+    /// Include all categories or only categories observed in the source.
+    pub mode: CategoryMode,
+    /// Ordered known genotype categories.
+    pub order: Vec<Genotype>,
+    /// Per-category output header overrides.
+    pub labels: BTreeMap<Genotype, String>,
+}
+
+impl Default for GenotypeDisplayConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            mode: CategoryMode::Existing,
+            order: vec![Genotype::Hom, Genotype::Het, Genotype::Wt],
+            labels: BTreeMap::new(),
+        }
+    }
+}
+
+impl From<&GroupConfig> for GenotypeDisplayConfig {
+    fn from(group: &GroupConfig) -> Self {
+        Self {
+            name: group.name.clone(),
+            mode: group.mode,
+            order: group.order.clone(),
+            labels: group.labels.clone(),
+        }
+    }
+}
+
+impl GenotypeDisplayConfig {
+    /// Apply this remembered presentation to a newly selected source group.
+    pub fn apply_to(&self, group: &mut GroupConfig) {
+        group.name = self.name.clone();
+        group.mode = self.mode;
+        group.order = self.order.clone();
+        group.labels = self.labels.clone();
+    }
+
+    /// Validate presentation settings independently of a source column.
+    pub fn validate(&self) -> crate::Result<()> {
+        GroupConfig {
+            column: "Genotype".into(),
+            name: self.name.clone(),
+            mode: self.mode,
+            order: self.order.clone(),
+            labels: self.labels.clone(),
+        }
+        .validate()
+    }
+}
+
+/// Normalize a genotype source name for remembered display-profile lookup.
+///
+/// Trimming, collapsing whitespace, and Unicode lower-casing make matching
+/// insensitive to formatting differences while retaining non-ASCII names.
+pub fn normalize_genotype_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 /// Per-mouse mappings and genotype summary settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -300,6 +372,9 @@ pub struct PlateToCageConfig {
     pub sex_tokens: Vec<String>,
     /// Ordered selected genotype groups.
     pub groups: Vec<GroupConfig>,
+    /// Remembered presentation settings keyed by normalized source genotype name.
+    #[serde(default)]
+    pub genotype_display_defaults: BTreeMap<String, GenotypeDisplayConfig>,
     /// Accepted genotype tokens shared by the selected columns.
     pub tokens: GenotypeTokens,
     /// Whitelisted field template; no executable expressions.
@@ -323,10 +398,63 @@ impl Default for PlateToCageConfig {
             layout: InputLayout::Sparse,
             sex_tokens: vec!["F".into(), "M".into()],
             groups: vec![],
+            genotype_display_defaults: BTreeMap::new(),
             tokens: GenotypeTokens::default(),
-            mouse_label: "{ear}{mouse_number}".into(),
+            mouse_label: "{ear_label}{global_id}".into(),
             output: OutputConfig::default(),
         }
+    }
+}
+
+impl PlateToCageConfig {
+    /// Find a remembered profile using normalized source-name matching.
+    pub fn genotype_display_profile(&self, source_name: &str) -> Option<&GenotypeDisplayConfig> {
+        let normalized = normalize_genotype_name(source_name);
+        self.genotype_display_defaults
+            .iter()
+            .find(|(key, _)| normalize_genotype_name(key) == normalized)
+            .map(|(_, profile)| profile)
+    }
+
+    /// Add or replace one remembered profile under its normalized source name.
+    pub fn set_genotype_display_profile(
+        &mut self,
+        source_name: &str,
+        profile: GenotypeDisplayConfig,
+    ) {
+        let normalized = normalize_genotype_name(source_name);
+        self.genotype_display_defaults
+            .retain(|key, _| normalize_genotype_name(key) != normalized);
+        if !normalized.is_empty() {
+            self.genotype_display_defaults.insert(normalized, profile);
+        }
+    }
+
+    /// Build the settings representation written by Plate to Cage Save as default.
+    ///
+    /// Source genotype mappings and generated genotype output identities are
+    /// transient to the current pasted table, while display profiles persist by
+    /// normalized source name and are merged with profiles already on disk.
+    pub fn saved_defaults_from(&self, previous: &Self) -> Self {
+        let mut saved = self.clone();
+        saved.groups.clear();
+        saved
+            .output
+            .order
+            .retain(|key| !key.starts_with("genotype:"));
+        saved
+            .output
+            .labels
+            .retain(|key, _| !key.starts_with("genotype:"));
+        saved.genotype_display_defaults = previous.genotype_display_defaults.clone();
+        for group in &self.groups {
+            if let Some(source_name) = group.column.header()
+                && !normalize_genotype_name(source_name).is_empty()
+            {
+                saved.set_genotype_display_profile(source_name, GenotypeDisplayConfig::from(group));
+            }
+        }
+        saved
     }
 }
 
@@ -458,7 +586,8 @@ pub fn save_defaults(path: &Path, config: &AppConfig) -> Result<()> {
 pub enum WorkflowDefaults<'a> {
     /// Save only the cage expansion defaults.
     CageToPlate(&'a CageToPlateConfig),
-    /// Save only the genotype summary defaults.
+    /// Save only the genotype summary defaults; selected genotype source/output
+    /// identities are projected out and display profiles are merged by name.
     PlateToCage(&'a PlateToCageConfig),
 }
 
@@ -476,7 +605,9 @@ pub fn save_workflow_defaults(path: &Path, workflow: WorkflowDefaults<'_>) -> Re
     };
     match workflow {
         WorkflowDefaults::CageToPlate(settings) => saved.cage_to_plate = settings.clone(),
-        WorkflowDefaults::PlateToCage(settings) => saved.plate_to_cage = settings.clone(),
+        WorkflowDefaults::PlateToCage(settings) => {
+            saved.plate_to_cage = settings.saved_defaults_from(&saved.plate_to_cage)
+        }
     }
     save_defaults(path, &saved)
 }

@@ -316,7 +316,7 @@ mod tests {
         let Draft::Plate(config) = &mut dialog.draft else {
             unreachable!()
         };
-        config.mouse_label = "{ear}/{mouse_number}".into();
+        config.mouse_label = "{ear_label}/{global_id}".into();
         assert!(dialog.handle_action(Action::Apply, &mut active, &mut cage, &mut plate, None));
         assert!(!cage.stale && plate.stale);
         assert_eq!(active.cage_to_plate.plate.start_mouse, 42);
@@ -365,7 +365,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("defaults.json");
         let mut active = AppConfig::default();
-        active.plate_to_cage.mouse_label = "unsaved {ear}".into();
+        active.plate_to_cage.mouse_label = "unsaved {ear_label}".into();
         let mut cage = converted();
         let mut plate = converted();
         let mut dialog = ConfigDialog::new(&active, 0);
@@ -385,7 +385,7 @@ mod tests {
         let saved = read_config(&path).unwrap();
         assert_eq!(saved.cage_to_plate, active.cage_to_plate);
         assert_eq!(saved.plate_to_cage, PlateToCageConfig::default());
-        assert_eq!(active.plate_to_cage.mouse_label, "unsaved {ear}");
+        assert_eq!(active.plate_to_cage.mouse_label, "unsaved {ear_label}");
         assert!(!plate.stale);
         let Draft::Cage(config) = &mut dialog.draft else {
             unreachable!()

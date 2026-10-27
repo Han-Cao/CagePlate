@@ -51,6 +51,14 @@ pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
     ui.heading(section_text(title));
 }
 
+pub(super) fn text_edit<'a>(ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(value).background_color(ui.visuals().extreme_bg_color)
+}
+
+pub(super) fn multiline_text_edit<'a>(ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
+    egui::TextEdit::multiline(value).background_color(ui.visuals().extreme_bg_color)
+}
+
 fn source_picker(
     ui: &mut egui::Ui,
     label: &str,
@@ -185,7 +193,9 @@ pub(super) fn genotype_tokens(ui: &mut egui::Ui, tokens: &mut GenotypeTokens) {
         ui.label("Blank always means unknown. Every other value must match one of these tokens; matching is case-sensitive after trimming.");
         egui::Grid::new("tokens").num_columns(2).show(ui, |ui| {
             for (label, value) in [("Hom", &mut tokens.hom), ("Het", &mut tokens.het), ("WT", &mut tokens.wt), ("Unknown", &mut tokens.unknown)] {
-                ui.label(label); ui.text_edit_singleline(value); ui.end_row();
+                ui.label(label);
+                ui.add(text_edit(ui, value));
+                ui.end_row();
             }
         });
     });
@@ -234,7 +244,7 @@ pub(super) fn group_labels(ui: &mut egui::Ui, group: &mut GroupConfig, tokens: &
                 });
                 let mut label = group.label(state, tokens);
                 if ui
-                    .add(egui::TextEdit::singleline(&mut label).desired_width(220.0))
+                    .add(text_edit(ui, &mut label).desired_width(220.0))
                     .changed()
                 {
                     group.labels.insert(state, label);

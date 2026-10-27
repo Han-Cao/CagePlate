@@ -4,7 +4,7 @@
 
 Map cage display, ear, positive global mouse number, and one or more genotype columns. Optionally map a separate sex column, within-cage index, plate, well, and remarks. Unmap optional fields that are absent. A header row is required to identify genotype group names; headerless input/configs are rejected. There is no header checkbox for this workflow. Source names are arbitrary and mapping identity includes duplicate-header occurrence when needed. Missing/incompatible saved mappings require explicit remapping.
 
-Config contains the layout, all mappings, gene hierarchy/tokens/labels, mouse template, sex markers and output names/order. **Apply / Cancel** commits/discards this workflow's draft; **Reset** stages tool defaults. **Save as default** saves and applies only Plate to Cage, preserving the saved Cage to Plate section. In **Input columns**, selectors are ordered Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID, Remarks, Sex, followed by **Genotype (level 1)**. Optional mappings can be **Not used**. Select real header names after pasting; **Add genotype** adds another level selector. Reorder/remove input rows to change levels; their settings travel with the selected genes. See [configuration](configuration.md).
+Config contains the layout, all mappings, gene hierarchy/tokens/labels, mouse ID, sex markers and output names/order. **Apply / Cancel** commits/discards this workflow's draft; **Reset** stages tool defaults. **Save as default** saves and applies only Plate to Cage, preserving the saved Cage to Plate section. It does not persist the selected genotype input columns or generated genotype output columns; instead, each selected genotype's display settings are merged into a normalized source-name profile for reuse on a future matching input. In **Input columns**, selectors are ordered Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID, Remarks, Sex, followed by **Genotype (level 1)**. Optional mappings can be **Not used**. Select real header names after pasting; **Add genotype** adds another level selector below the final genotype row. Reorder/remove input rows to change levels; their settings travel with the selected genes. See [configuration](configuration.md).
 
 Choose **Input cage sex layout** explicitly (same display names as Cage to Plate):
 
@@ -18,7 +18,7 @@ Normalize sparse display before grouping. Repeated/disjoint blocks of a cage con
 
 ## Genotypes and hierarchy
 
-Select gene columns in **outermost → innermost** order in **Input columns**, using **Add genotype** for further levels and row arrows to reorder. **Genotypes** automatically displays a bold-titled card per selected source. Each card contains only **Include genotypes** and **Display names** (group/category labels and category ordering). There is no separate Add genotype column control in this section. **Accepted genotype values** configures the shared tokens.
+Select gene columns in **outermost → innermost** order in **Input columns**, using **Add genotype** below the final row for further levels and row arrows to reorder. **Genotypes** automatically displays a bold-titled card per selected source. Each card contains only **Include genotypes** and **Display names** (group/category labels and category ordering). There is no separate Add genotype column control in this section. **Accepted genotype values** configures the shared tokens below the per-genotype display cards.
 
 Each selected gene has an independent category policy:
 
@@ -51,7 +51,7 @@ Default gene/category labels are `Group, genotype` (for example `LSL, -/-`). An 
 3. Override `LSL` WT to `WT`; leave the `5XFAD` WT default `5XFAD, +/+`.
 4. Map `Remarks`.
 
-Mouse labels default to `{ear}{mouse_number}` (such as `RR8`), joined with `, `. The validated template supports `{ear}`, `{mouse_number}`, `{within_cage}`, `{plate}`, `{well}`, `{cage}`, `{sex}` plus literal text. Optional fields must be mapped and populated when used. Braces have no escape/expression syntax. Remarks retain source text and aggregate as `ear: text`, separated with `; `; whitespace-only remarks are omitted.
+Mouse IDs default to `{ear_label}{global_id}` (such as `RR8`), joined with `, `. The validated template supports only `{cage_id}`, `{within_cage_id}`, `{ear_label}`, `{global_id}`, and `{sex}`, plus literal text. `{within_cage_id}` must be mapped when used; the other fields correspond to the required input columns or normalized sex value. Braces have no escape/expression syntax. Remarks retain source text and aggregate as `ear: text`, separated with `; `; whitespace-only remarks are omitted.
 
 **Output** offers **Copy output (with headers)** and **Copy output (without headers)**. The latter omits every genotype header level while retaining every summary row and TSV quoting/trailing empties. Both buttons are disabled for stale output.
 

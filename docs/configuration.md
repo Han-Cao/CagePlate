@@ -7,7 +7,7 @@ The tool's built-ins (`Default` implementations) and the user's saved defaults a
 - Windows: `%APPDATA%\CagePlate\defaults.json` (standard roaming user config directory).
 - Linux/WSL: `$XDG_CONFIG_HOME/CagePlate/defaults.json`, normally `~/.config/CagePlate/defaults.json`.
 
-Each workflow's **Config** pop-up displays the actual path and edits a private draft. **Apply** validates/activates only that draft and closes; **Cancel**, Escape, or backdrop dismissal discards it. **Reset** stages only that workflow's tool built-ins, not the user's saved defaults; Apply activates without saving. **Save as default** validates, merges only this workflow into the latest valid file, saves atomically, then applies it and keeps the pop-up open. The other workflow's saved values are preserved, never replaced with its unsaved edits. Cancel after a successful save discards only subsequent edits.
+Each workflow's **Config** pop-up displays the actual path and edits a private draft. **Apply** validates/activates only that draft and closes; **Cancel**, Escape, or backdrop dismissal discards it. **Reset** stages only that workflow's tool built-ins, not the user's saved defaults; Apply activates without saving. **Save as default** validates, merges only this workflow into the latest valid file, saves atomically, then applies it and keeps the pop-up open. The other workflow's saved values are preserved, never replaced with its unsaved edits. Cancel after a successful save discards only subsequent edits. For Plate to Cage, selected genotype source mappings and generated `genotype:` output identities are transient and are omitted from the saved workflow; each selected genotype's display/category settings are instead appended or updated in `genotype_display_defaults` under a normalized source-name key.
 
 There is no implicit exit/autosave. Draft-only edits do not stale previews; input/header-mode changes and changed applied settings do. Neither pasted records, output tables, previews, clipboard contents nor input history are serialized.
 
@@ -45,10 +45,11 @@ Plate → Cage fields:
 | `layout`, `sex_tokens` | `sparse` (Sex on a new line), `inline` (Inline sex), or `repeated` (Separate column). Markers `["F","M"]`. Repeated requires separate sex. |
 | `groups` | Ordered gene definitions, empty by default until the user selects genes. Conversion requires 1..=8. |
 | `tokens` | Four distinct accepted strings: hom `-/-`, het `+/-`, wt `+/+`, unknown `?`. Blank is implicitly unknown. |
-| `mouse_label` | `{ear}{mouse_number}`; validated field template. |
-| `output` | Stable-key ordering and final-header label overrides. |
+| `mouse_label` | `{ear_label}{global_id}`; validated field template. Allowed fields are `{cage_id}`, `{within_cage_id}`, `{ear_label}`, `{global_id}`, and `{sex}`. |
+| `genotype_display_defaults` | Normalized source genotype names mapped to remembered display/category settings; selected source columns are not stored here. |
+| `output` | Stable-key ordering and final-header label overrides. Dynamic `genotype:` entries are transient during scoped Plate to Cage default saves. |
 
-Each group has `column`, optional display `name` (blank = source header or `Column N`), `mode` (`existing`/`all`), `order` (default `["hom","het","wt"]`), and `labels` (state-keyed header overrides, such as `{"wt":"WT"}`). Changing tokens or display names does not change semantic states.
+Each group has `column`, optional display `name` (blank = source header or `Column N`), `mode` (`existing`/`all`), `order` (default `["hom","het","wt"]`), and `labels` (state-keyed header overrides, such as `{"wt":"WT"}`). Changing tokens or display names does not change semantic states. The saved display profile contains the group presentation fields but not `column`; selecting a source with the same normalized name reloads that profile.
 
 ## Column references and output identities
 
@@ -85,7 +86,7 @@ Both previews retain headers. **Copy output (with headers)** copies them; **Copy
 
 Cage Config sections are **Input columns** and **Output format**, with **Cage sex layout**, **Plate layout**, **Ear labels**, and **Output columns**. Output field meanings (Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID) appear before the editable default names (`Cage`, `Sample`, `Ear`, `Plate`, `Well`, `#`). Separate column adds `SEX` immediately after Cage. Per-field Reset name controls and confirmation text are removed; the workflow's Reset still restores all tool defaults.
 
-Plate Config's **Input columns** contains Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID, Remarks, Sex, then **Genotype (level 1)**. **Add genotype** adds another level selector; move/remove controls operate on these input rows. The **Genotypes** section automatically shows a card per selected gene with **Include genotypes** and **Display names**. A newly added blank level must be selected or removed before Apply/save.
+Plate Config's **Input columns** contains Cage ID, Within-cage ID, Ear label, Plate ID, Well ID, Global ID, Remarks, Sex, then **Genotype (level 1)**. **Add genotype** appears below the final genotype row and adds another level selector; move/remove controls operate on these input rows. The **Genotypes** section automatically shows a card per selected gene with **Include genotypes** and **Display names**, followed by **Accepted genotype values**. A newly added blank level must be selected or removed before Apply/save. The output-column preview is rebuilt from the current draft/table so genotype headers follow live display edits.
 
 `output` supports:
 
@@ -96,7 +97,7 @@ Plate Config's **Input columns** contains Cage ID, Within-cage ID, Ear label, Pl
 }
 ```
 
-Listed current keys move first; unlisted keys append in natural order; stale keys are ignored. Full hierarchical paths move with leaves. Fixed keys are documented in each workflow guide. A genotype leaf key starts `genotype:` followed by JSON-encoded sorted `(source ColumnRef, semantic state)` pairs; this is generated automatically by the core/GUI, independent of display names and hierarchy order. Per-gene category labels should normally be changed through `groups[].labels`, not opaque leaf keys.
+Listed current keys move first; unlisted keys append in natural order; stale keys are ignored. Full hierarchical paths move with leaves. Fixed keys are documented in each workflow guide. A genotype leaf key starts `genotype:` followed by JSON-encoded sorted `(source ColumnRef, semantic state)` pairs; this is generated automatically by the core/GUI, independent of display names and hierarchy order. Per-gene category labels should normally be changed through `groups[].labels`, not opaque leaf keys. These generated keys and their output labels/order entries are not persisted by a scoped Plate to Cage default save.
 
 ## Example-compatible configuration
 

@@ -507,18 +507,15 @@ fn duplicate_indices_and_ambiguous_sparse_blocks_are_errors() {
 }
 
 #[test]
-fn inline_mode_and_configured_optional_label_fields() {
+fn inline_mode_and_configured_optional_mouse_id_fields() {
     let mut cfg = repeated(vec![group("G", CategoryMode::Existing)]);
     cfg.layout = InputLayout::Inline;
     cfg.sex = None;
-    cfg.plate = Some("Plate".into());
-    cfg.well = Some("Well".into());
-    cfg.mouse_label = "{plate}/{well}:{ear}".into();
-    let input =
-        parse_tsv("Cage\tEar\t#\tG\tPlate\tWell\nA (F)\tR\t1\t+/+\t3\t2B\n\tL\t2\t+/+\t3\t2C")
-            .unwrap();
+    cfg.within_cage = Some("Sample".into());
+    cfg.mouse_label = "{cage_id}/{within_cage_id}:{ear_label}".into();
+    let input = parse_tsv("Cage\tEar\t#\tG\tSample\nA (F)\tR\t1\t+/+\t1\n\tL\t2\t+/+\t2").unwrap();
     let out = plate_to_cage::convert(&input, &cfg).unwrap();
-    assert_eq!(out.rows[0][3], "3/2B:R, 3/2C:L");
+    assert_eq!(out.rows[0][3], "A/1:R, A/2:L");
     cfg.groups[0].order = vec![Genotype::Wt, Genotype::Hom, Genotype::Het];
     assert!(cfg.validate().is_ok());
     cfg.groups[0].order = vec![Genotype::Unknown];

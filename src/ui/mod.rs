@@ -66,13 +66,12 @@ impl Workflow {
         ui.horizontal_wrapped(|ui| {
             replace = ui.button("Paste / replace").on_hover_text("Replace input with clipboard text. You can also focus the box and press Ctrl+V.").clicked();
             clear = ui.button("Clear").clicked();
-            ui.label(if has_header { "TSV with headers - copy cells from Excel" } else { "Headerless TSV - select columns in Config" });
         });
         if replace || clear {
             self.input.clear();
         }
         let response = ui.add(
-            egui::TextEdit::multiline(&mut self.input)
+            settings::multiline_text_edit(ui, &mut self.input)
                 .id_salt("input")
                 .code_editor()
                 .desired_rows(6)
@@ -268,7 +267,6 @@ impl eframe::App for CagePlateApp {
         let mut open_config = false;
         theme::root_frame(ui.style()).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                settings::section_title(ui, "CagePlate");
                 ui.selectable_value(&mut self.tab, 0, "Cage to Plate");
                 ui.selectable_value(&mut self.tab, 1, "Plate to Cage");
             });
@@ -379,11 +377,14 @@ fn output_settings(
                     if settings::move_button(ui, false, index + 1 < keys.len()).clicked() {
                         movement = Some((index, index + 1));
                     }
-                    ui.add_sized([110.0, 24.0], egui::Label::new(meaning))
-                        .on_hover_text(key);
+                    ui.add_sized(
+                        [110.0, 24.0],
+                        egui::Label::new(format!("{meaning}:")).halign(egui::Align::RIGHT),
+                    )
+                    .on_hover_text(key);
                     let mut label = config.labels.get(key).cloned().unwrap_or(default);
                     if ui
-                        .add(egui::TextEdit::singleline(&mut label).desired_width(220.0))
+                        .add(settings::text_edit(ui, &mut label).desired_width(220.0))
                         .changed()
                     {
                         config.labels.insert(key.clone(), label);
@@ -454,6 +455,12 @@ mod tests {
         let mut state = Workflow::default();
         let mut has_header = true;
         let output = frame(&ctx, vec![], |ui| state.input_ui(ui, Some(&mut has_header)));
+        for annotation in [
+            "Headerless TSV - select columns in Config",
+            "TSV with headers - copy cells from Excel",
+        ] {
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == annotation)));
+        }
         let paste = text_point(&output, "Paste / replace");
         for (text, expected) in [("A\t2\tF", false), ("Cage #\tQTY\tSEX\nA\t1\tF", true)] {
             frame(
@@ -516,12 +523,12 @@ mod tests {
             cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
         });
         for label in [
-            "Cage ID",
-            "Within-cage ID",
-            "Ear label",
-            "Plate ID",
-            "Well ID",
-            "Global ID",
+            "Cage ID:",
+            "Within-cage ID:",
+            "Ear label:",
+            "Plate ID:",
+            "Well ID:",
+            "Global ID:",
             "Cage",
             "Sample",
             "Ear",

@@ -22,48 +22,50 @@ pub(super) fn show(
 
 // Source selection and hierarchy operations live together. The cards below
 // follow this same vector, so names/category settings travel with each gene.
-fn genotype_sources(ui: &mut egui::Ui, groups: &mut Vec<GroupConfig>, table: Option<&InputTable>) {
-    if groups.is_empty() {
+fn genotype_sources(ui: &mut egui::Ui, config: &mut PlateToCageConfig, table: Option<&InputTable>) {
+    if config.groups.is_empty() {
         let mut first = None;
         ui.horizontal(|ui| {
             settings::choose_column(ui, "Genotype (level 1)", &mut first, table);
-            ui.add_enabled(false, egui::Button::new("Add genotype"));
         });
         if let Some(column) = first {
-            groups.push(GroupConfig {
+            let mut group = GroupConfig {
                 column,
                 ..Default::default()
-            });
+            };
+            let profile = group
+                .column
+                .header()
+                .and_then(|name| config.genotype_display_profile(name).cloned());
+            if let Some(profile) = profile {
+                profile.apply_to(&mut group);
+            }
+            config.groups.push(group);
         }
         return;
     }
-    let can_add = groups.len() < MAX_GROUPS
+    let can_add = config.groups.len() < MAX_GROUPS
         && table.is_some_and(|table| {
-            groups
+            config
+                .groups
                 .iter()
                 .all(|group| group.column.resolve(table).is_ok())
         });
-    let count = groups.len();
-    let mut add = false;
+    let count = config.groups.len();
+    let mut changed_sources = vec![];
     let mut remove = None;
     let mut movement = None;
-    for (index, group) in groups.iter_mut().enumerate() {
+    for index in 0..count {
+        let before = config.groups[index].column.clone();
         ui.push_id(("genotype_source", index), |ui| {
             ui.horizontal(|ui| {
                 settings::column(
                     ui,
                     &format!("Genotype (level {})", index + 1),
-                    &mut group.column,
+                    &mut config.groups[index].column,
                     table,
                     true,
                 );
-                if index == 0
-                    && ui
-                        .add_enabled(can_add, egui::Button::new("Add genotype"))
-                        .clicked()
-                {
-                    add = true;
-                }
                 if settings::move_button(ui, true, index > 0).clicked() {
                     movement = Some((index, index - 1));
                 }
@@ -75,16 +77,31 @@ fn genotype_sources(ui: &mut egui::Ui, groups: &mut Vec<GroupConfig>, table: Opt
                 }
             });
         });
+        if config.groups[index].column != before {
+            changed_sources.push(index);
+        }
     }
     if let Some(index) = remove {
-        groups.remove(index);
+        config.groups.remove(index);
     } else if let Some((a, b)) = movement {
-        groups.swap(a, b);
-    } else if add {
-        // An empty source requires an explicit selection before Apply/save.
-        groups.push(GroupConfig {
-            column: ColumnRef::Name(String::new()),
-            ..Default::default()
+        config.groups.swap(a, b);
+    } else {
+        for index in changed_sources {
+            let profile = config.groups[index]
+                .column
+                .header()
+                .and_then(|name| config.genotype_display_profile(name).cloned());
+            if let Some(profile) = profile {
+                profile.apply_to(&mut config.groups[index]);
+            }
+        }
+        ui.add_enabled_ui(can_add, |ui| {
+            if ui.button("Add genotype").clicked() {
+                config.groups.push(GroupConfig {
+                    column: ColumnRef::Name(String::new()),
+                    ..Default::default()
+                });
+            }
         });
     }
 }
@@ -133,10 +150,9 @@ pub(super) fn settings_ui(
     settings::column(ui, "Global ID", &mut config.mouse_number, table, true);
     settings::optional_column(ui, "Remarks", &mut config.remarks, table, true);
     settings::optional_column(ui, "Sex", &mut config.sex, table, true);
-    genotype_sources(ui, &mut config.groups, table);
+    genotype_sources(ui, config, table);
 
     settings::section_title(ui, "Genotypes");
-    settings::genotype_tokens(ui, &mut config.tokens);
     if config.groups.is_empty() {
         ui.label("Select a genotype in Input columns to configure it.");
     }
@@ -163,27 +179,41 @@ pub(super) fn settings_ui(
                 ui.collapsing(settings::section_text("Display names"), |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Group display name");
-                        ui.text_edit_singleline(&mut group.name);
+                        ui.add(settings::text_edit(ui, &mut group.name));
                     });
                     settings::group_labels(ui, group, &config.tokens);
                 });
             });
         });
     }
-    ui.collapsing(settings::section_text("Mouse labels and sparse sex markers"), |ui| {
-        ui.label("Mouse label template (default {ear}{mouse_number}):");
-        ui.text_edit_singleline(&mut config.mouse_label);
-        ui.small("Fields: {ear}, {mouse_number}, {within_cage}, {plate}, {well}, {cage}, {sex}. Optional fields must be mapped and present.");
-        ui.label("Sparse-layout sex markers, one per line:");
+    settings::genotype_tokens(ui, &mut config.tokens);
+    ui.collapsing(settings::section_text("Mouse labeling"), |ui| {
+        ui.label("Mouse ID");
+        ui.add(settings::text_edit(ui, &mut config.mouse_label));
+        ui.small("Fields: {cage_id}, {within_cage_id}, {ear_label}, {global_id}, {sex}.");
+        ui.label("Allowed sex");
         let mut text = config.sex_tokens.join("\n");
-        if ui.add(egui::TextEdit::multiline(&mut text).id_salt("sex_tokens").desired_rows(2)).changed() {
+        if ui
+            .add(
+                settings::multiline_text_edit(ui, &mut text)
+                    .id_salt("sex_tokens")
+                    .desired_rows(2),
+            )
+            .changed()
+        {
             config.sex_tokens = text.split('\n').map(String::from).collect();
         }
     });
+    let preview_output = table.and_then(|table| plate_to_cage::convert(table, config).ok());
+    let current_output = if table.is_some() {
+        preview_output.as_ref()
+    } else {
+        output
+    };
     output_settings(
         ui,
         &mut config.output,
-        output,
+        current_output,
         &[
             ("cage", "Cage ID", "Cage #"),
             ("quantity", "Quantity", "QTY"),
@@ -201,7 +231,38 @@ mod tests {
         theme,
     };
     use super::*;
-    use ::cageplate::tsv::parse_tsv;
+    use ::cageplate::{config::GenotypeDisplayConfig, tsv::parse_tsv};
+
+    fn genotype_sources_for_groups(
+        ui: &mut egui::Ui,
+        groups: &mut Vec<GroupConfig>,
+        table: Option<&InputTable>,
+    ) {
+        let mut config = PlateToCageConfig {
+            groups: std::mem::take(groups),
+            ..Default::default()
+        };
+        genotype_sources(ui, &mut config, table);
+        *groups = config.groups;
+    }
+
+    fn click_config_source_control(
+        ctx: &egui::Context,
+        config: &mut PlateToCageConfig,
+        table: &InputTable,
+        label: &str,
+    ) {
+        let output = frame(ctx, vec![], |ui| genotype_sources(ui, config, Some(table)));
+        let pos = text_point(&output, label);
+        frame(
+            ctx,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+            |ui| genotype_sources(ui, config, Some(table)),
+        );
+        frame(ctx, vec![pointer(pos, false)], |ui| {
+            genotype_sources(ui, config, Some(table))
+        });
+    }
 
     fn click_source_control(
         ctx: &egui::Context,
@@ -209,16 +270,70 @@ mod tests {
         table: &InputTable,
         label: &str,
     ) {
-        let output = frame(ctx, vec![], |ui| genotype_sources(ui, groups, Some(table)));
+        let output = frame(ctx, vec![], |ui| {
+            genotype_sources_for_groups(ui, groups, Some(table))
+        });
         let pos = text_point(&output, label);
         frame(
             ctx,
             vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
-            |ui| genotype_sources(ui, groups, Some(table)),
+            |ui| genotype_sources_for_groups(ui, groups, Some(table)),
         );
         frame(ctx, vec![pointer(pos, false)], |ui| {
-            genotype_sources(ui, groups, Some(table))
+            genotype_sources_for_groups(ui, groups, Some(table))
         });
+    }
+
+    #[test]
+    fn genotype_selection_reuses_normalized_display_defaults() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let table = parse_tsv("Cage\tGene A\nA (F)\t+/+\n").unwrap();
+        let mut config = PlateToCageConfig::default();
+        config.genotype_display_defaults.insert(
+            "gene a".into(),
+            GenotypeDisplayConfig {
+                name: "Custom A".into(),
+                mode: CategoryMode::All,
+                ..Default::default()
+            },
+        );
+        click_config_source_control(&ctx, &mut config, &table, "Select column");
+        click_config_source_control(&ctx, &mut config, &table, "Gene A [column 2]");
+        assert_eq!(config.groups.len(), 1);
+        assert_eq!(config.groups[0].name, "Custom A");
+        assert_eq!(config.groups[0].mode, CategoryMode::All);
+    }
+
+    #[test]
+    fn output_preview_follows_live_genotype_display_settings() {
+        let table = parse_tsv("Cage\tEar\t#\tGene A\nA (F)\tR\t1\t-/-\n").unwrap();
+        let mut config = PlateToCageConfig {
+            within_cage: None,
+            plate: None,
+            well: None,
+            layout: InputLayout::Inline,
+            groups: vec![GroupConfig {
+                column: "Gene A".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let preview = plate_to_cage::convert(&table, &config).unwrap();
+        assert!(
+            preview
+                .headers
+                .last()
+                .is_some_and(|headers| headers.contains(&"Gene A, -/-".into()))
+        );
+        config.groups[0].name = "Renamed".into();
+        let preview = plate_to_cage::convert(&table, &config).unwrap();
+        assert!(
+            preview
+                .headers
+                .last()
+                .is_some_and(|headers| headers.contains(&"Renamed, -/-".into()))
+        );
     }
 
     #[test]
@@ -265,7 +380,7 @@ mod tests {
         // Removal is in the input mapping rows, not in the display cards, and
         // preserves the surviving gene's settings while levels are renumbered.
         let output = frame(&ctx, vec![], |ui| {
-            genotype_sources(ui, &mut groups, Some(&table))
+            genotype_sources_for_groups(ui, &mut groups, Some(&table))
         });
         let remove = output
             .shapes
@@ -281,10 +396,10 @@ mod tests {
         frame(
             &ctx,
             vec![egui::Event::PointerMoved(remove), pointer(remove, true)],
-            |ui| genotype_sources(ui, &mut groups, Some(&table)),
+            |ui| genotype_sources_for_groups(ui, &mut groups, Some(&table)),
         );
         frame(&ctx, vec![pointer(remove, false)], |ui| {
-            genotype_sources(ui, &mut groups, Some(&table))
+            genotype_sources_for_groups(ui, &mut groups, Some(&table))
         });
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "Custom A");

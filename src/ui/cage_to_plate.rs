@@ -117,7 +117,7 @@ pub(super) fn settings_ui(
         } else {
             ui.label("One label per line, in within-cage order. Reorder lines to change assignment.");
             let mut text = config.ears.join("\n");
-            if ui.add(egui::TextEdit::multiline(&mut text).id_salt("ears").desired_rows(5)).changed() { config.ears = text.split('\n').map(String::from).collect(); }
+            if ui.add(settings::multiline_text_edit(ui, &mut text).id_salt("ears").desired_rows(5)).changed() { config.ears = text.split('\n').map(String::from).collect(); }
             if ui.button("Use automatic labels").clicked() { config.ears.clear(); }
             if ui.add_enabled(maximum.is_some(), egui::Button::new("Regenerate defaults for current input")).clicked() { config.ears = default_ears(maximum.unwrap_or(0)).unwrap_or_default(); }
         }

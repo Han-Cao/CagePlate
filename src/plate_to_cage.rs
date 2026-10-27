@@ -122,17 +122,7 @@ fn template_parts(template: &str) -> Result<Vec<LabelPart>> {
             .find('}')
             .ok_or_else(|| Error::new("Unclosed field in mouse label template"))?;
         let field = &tail[..end];
-        if ![
-            "ear",
-            "mouse_number",
-            "within_cage",
-            "plate",
-            "well",
-            "cage",
-            "sex",
-        ]
-        .contains(&field)
-        {
+        if !["cage_id", "within_cage_id", "ear_label", "global_id", "sex"].contains(&field) {
             return Err(Error::new(format!(
                 "Unsupported mouse-label field {{{field}}}"
             )));
@@ -150,23 +140,14 @@ fn render_label(mouse: &Mouse, parts: &[LabelPart]) -> Result<String> {
             LabelPart::Text(text) => result.push_str(text),
             LabelPart::Field(field) => {
                 let value = match field.as_str() {
-                    "ear" => mouse.ear.clone(),
-                    "mouse_number" => mouse.mouse_number.to_string(),
-                    "cage" => mouse.cage_id.clone(),
+                    "cage_id" => mouse.cage_id.clone(),
+                    "within_cage_id" => mouse
+                        .within_cage
+                        .map(|v| v.to_string())
+                        .ok_or_else(|| Error::new("Mouse ID needs a mapped within-cage index"))?,
+                    "ear_label" => mouse.ear.clone(),
+                    "global_id" => mouse.mouse_number.to_string(),
                     "sex" => mouse.sex.clone(),
-                    "within_cage" => mouse.within_cage.map(|v| v.to_string()).ok_or_else(|| {
-                        Error::new("Mouse label needs a mapped within-cage index")
-                    })?,
-                    "plate" => mouse
-                        .plate
-                        .clone()
-                        .filter(|v| !v.is_empty())
-                        .ok_or_else(|| Error::new("Mouse label needs a nonempty mapped plate"))?,
-                    "well" => mouse
-                        .well
-                        .clone()
-                        .filter(|v| !v.is_empty())
-                        .ok_or_else(|| Error::new("Mouse label needs a nonempty mapped well"))?,
                     _ => unreachable!("validated field"),
                 };
                 result.push_str(&value);
@@ -176,8 +157,8 @@ fn render_label(mouse: &Mouse, parts: &[LabelPart]) -> Result<String> {
     Ok(result)
 }
 
-/// Render a whitelisted mouse-label template without executing expressions.
-/// Supported fields: ear, mouse_number, within_cage, plate, well, cage, sex.
+/// Render a whitelisted Mouse ID template without executing expressions.
+/// Supported fields: cage_id, within_cage_id, ear_label, global_id, sex.
 /// Returns an error for invalid braces/fields or absent optional record values.
 pub fn format_mouse_label(mouse: &Mouse, template: &str) -> Result<String> {
     render_label(mouse, &template_parts(template)?)
@@ -210,6 +191,14 @@ impl PlateToCageConfig {
         }
         self.tokens.validate()?;
         self.output.validate()?;
+        for (name, profile) in &self.genotype_display_defaults {
+            if crate::config::normalize_genotype_name(name).is_empty() {
+                return Err(Error::new(
+                    "Remembered genotype display names must be nonempty",
+                ));
+            }
+            profile.validate()?;
+        }
         if self.groups.len() > MAX_GROUPS {
             return Err(Error::new(format!(
                 "Select at most {MAX_GROUPS} genotype groups"
@@ -239,9 +228,7 @@ impl PlateToCageConfig {
         for part in template_parts(&self.mouse_label)? {
             if let LabelPart::Field(field) = part {
                 let missing = match field.as_str() {
-                    "within_cage" => self.within_cage.is_none(),
-                    "plate" => self.plate.is_none(),
-                    "well" => self.well.is_none(),
+                    "within_cage_id" => self.within_cage.is_none(),
                     _ => false,
                 };
                 if missing {
@@ -715,11 +702,11 @@ mod tests {
     fn all_includes_empty_categories_and_template_is_configurable() {
         let mut cfg = config();
         cfg.groups[0].mode = CategoryMode::All;
-        cfg.mouse_label = "{cage}:{ear}-{mouse_number}".into();
+        cfg.mouse_label = "{cage_id}:{ear_label}-{global_id}".into();
         let t = parse_tsv("Cage\tEar\t#\tG\nA (F)\tR\t1\t-/-").unwrap();
         let out = convert(&t, &cfg).unwrap();
         assert_eq!(out.rows[0], ["A", "1", "F", "A:R-1", "", "", "", ""]);
-        cfg.mouse_label = "{well}".into();
+        cfg.mouse_label = "{plate}".into();
         assert!(cfg.validate().is_err());
         cfg.mouse_label = "{execute}".into();
         assert!(cfg.validate().is_err());
