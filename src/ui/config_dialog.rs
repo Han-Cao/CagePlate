@@ -128,8 +128,13 @@ impl ConfigDialog {
         };
         let is_cage = self.is_cage();
         let mut action = None;
-        let modal =
-            egui::Modal::new(egui::Id::unique(("workflow_config", is_cage))).show(ctx, |ui| {
+        // Keep the white text editors distinct from their surrounding canvas,
+        // just like the main input editor on the app's light-gray background.
+        let style = ctx.global_style();
+        let frame = egui::Frame::popup(&style).fill(style.visuals.panel_fill);
+        let modal = egui::Modal::new(egui::Id::unique(("workflow_config", is_cage)))
+            .frame(frame)
+            .show(ctx, |ui| {
                 ui.set_width((ctx.content_rect().width() - 64.0).clamp(280.0, 850.0));
                 settings::section_title(
                     ui,
@@ -466,6 +471,106 @@ mod tests {
         );
         output.textures_delta.clear();
         (action, output.shapes)
+    }
+
+    #[test]
+    fn both_config_modals_distinguish_white_text_editors_from_their_background() {
+        use super::super::{tests::pointer, tests::text_point, theme};
+
+        fn collect_rects<'a>(shape: &'a egui::Shape, rects: &mut Vec<&'a egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect_rects(shape, rects);
+                    }
+                }
+                egui::Shape::Rect(rect) => rects.push(rect),
+                _ => {}
+            }
+        }
+
+        for tab in 0..=1 {
+            let ctx = egui::Context::default();
+            theme::apply(&ctx);
+            ctx.global_style_mut(|style| style.animation_time = 0.0);
+            let mut active = AppConfig::default();
+            active.cage_to_plate.ears = vec!["R".into(), "L".into()];
+            let mut state = converted();
+            if tab == 1 {
+                state.input = "Cage\tSample\tEar\tPlate\tWell\t#\nA (F)\t1\tR\t1\t1A\t1".into();
+                state.reparse(true);
+            }
+            let mut dialog = ConfigDialog::new(&active, tab);
+            let mut render = |events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200.0, 1600.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        dialog.show(ui.ctx(), &state, true, None);
+                    },
+                );
+                output.textures_delta.clear();
+                output
+            };
+            render(vec![]);
+            let mut output = render(vec![]);
+            for section in [
+                if tab == 0 {
+                    "Ear labels"
+                } else {
+                    "Mouse labeling"
+                },
+                "Output columns",
+            ] {
+                let position = text_point(&output, section);
+                render(vec![
+                    egui::Event::PointerMoved(position),
+                    pointer(position, true),
+                ]);
+                render(vec![pointer(position, false)]);
+                output = render(vec![]);
+            }
+            let title = text_point(
+                &output,
+                if tab == 0 {
+                    "Cage to Plate - Config"
+                } else {
+                    "Plate to Cage - Config"
+                },
+            );
+            let mut rects = vec![];
+            for shape in &output.shapes {
+                collect_rects(&shape.shape, &mut rects);
+            }
+            let background = ctx.global_style().visuals.panel_fill;
+            let modal = rects
+                .iter()
+                .find(|rect| rect.rect.contains(title) && rect.fill == background)
+                .expect("Config modal must use the app's light-gray background");
+            assert_ne!(modal.fill, egui::Color32::WHITE);
+            let editor_values = if tab == 0 {
+                ["Cage", "R\nL", "Sample"]
+            } else {
+                ["Cage #", "F\nM", "{ear_label}{global_id}"]
+            };
+            for value in editor_values {
+                let position = text_point(&output, value);
+                assert!(
+                    rects.iter().any(|rect| {
+                        rect.fill == egui::Color32::WHITE
+                            && rect.rect.contains(position)
+                            && modal.rect.contains_rect(rect.rect)
+                    }),
+                    "editor {value:?} must have a white fill inside the gray modal"
+                );
+            }
+        }
     }
 
     #[test]
