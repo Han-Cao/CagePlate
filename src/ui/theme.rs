@@ -30,6 +30,7 @@ pub(super) fn apply(ctx: &egui::Context) {
     visuals.panel_fill = egui::Color32::from_gray(248);
     visuals.window_fill = egui::Color32::WHITE;
     visuals.extreme_bg_color = egui::Color32::WHITE;
+    visuals.text_edit_bg_color = Some(egui::Color32::WHITE);
     visuals.warn_fg_color = egui::Color32::from_rgb(133, 77, 14);
     visuals.error_fg_color = egui::Color32::from_rgb(185, 28, 28);
     ctx.set_visuals(visuals);
@@ -103,6 +104,7 @@ mod tests {
                 let visuals = ui.visuals();
                 assert!(!visuals.dark_mode);
                 assert_eq!(visuals.extreme_bg_color, egui::Color32::WHITE);
+                assert_eq!(visuals.text_edit_bg_color(), egui::Color32::WHITE);
                 assert_eq!(root_frame(ui.style()).fill, visuals.panel_fill);
                 assert_eq!(root_frame(ui.style()).fill.a(), 255);
                 assert!(luminance(visuals.panel_fill) > 0.9);

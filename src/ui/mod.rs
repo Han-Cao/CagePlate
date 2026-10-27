@@ -328,6 +328,17 @@ impl eframe::App for CagePlateApp {
     }
 }
 
+fn output_column_default_label(table: &OutputTable, index: usize) -> String {
+    table
+        .headers
+        .iter()
+        .filter_map(|row| row.get(index))
+        .filter(|cell| !cell.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 // Output controls work even before a conversion for the fixed metadata columns.
 fn output_settings(
     ui: &mut egui::Ui,
@@ -365,7 +376,7 @@ fn output_settings(
                             .keys
                             .iter()
                             .position(|k| k == key)
-                            .map(|i| table.headers.last().expect("headers")[i].clone())
+                            .map(|i| output_column_default_label(table, i))
                     })
                 })
                 .unwrap_or_else(|| key.clone());
@@ -548,6 +559,23 @@ mod tests {
             cage_to_plate::settings_ui(ui, Some(&table), None, &mut config)
         });
         text_point(&output, "SEX");
+    }
+
+    #[test]
+    fn output_column_defaults_include_all_hierarchical_header_levels() {
+        let table = OutputTable {
+            keys: vec!["genotype:example".into(), "cage".into()],
+            headers: vec![
+                vec!["5XFAD, +/+".into(), "".into()],
+                vec!["LSL, +/+".into(), "Cage #".into()],
+            ],
+            rows: vec![],
+        };
+        assert_eq!(
+            output_column_default_label(&table, 0),
+            "5XFAD, +/+ | LSL, +/+"
+        );
+        assert_eq!(output_column_default_label(&table, 1), "Cage #");
     }
 
     #[test]

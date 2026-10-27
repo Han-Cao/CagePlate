@@ -51,12 +51,12 @@ pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
     ui.heading(section_text(title));
 }
 
-pub(super) fn text_edit<'a>(ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
-    egui::TextEdit::singleline(value).background_color(ui.visuals().extreme_bg_color)
+pub(super) fn text_edit<'a>(_ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(value)
 }
 
-pub(super) fn multiline_text_edit<'a>(ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
-    egui::TextEdit::multiline(value).background_color(ui.visuals().extreme_bg_color)
+pub(super) fn multiline_text_edit<'a>(_ui: &egui::Ui, value: &'a mut String) -> egui::TextEdit<'a> {
+    egui::TextEdit::multiline(value)
 }
 
 fn source_picker(
