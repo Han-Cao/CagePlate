@@ -27,7 +27,12 @@ impl Draft {
     fn validate(&self) -> Result<()> {
         match self {
             Self::Cage(config) => config.validate(),
-            Self::Plate(config) => config.validate(),
+            Self::Plate(config) => {
+                if config.groups.is_empty() {
+                    return Err(Error::new("Genotype (level 1) requires a source column."));
+                }
+                config.validate()
+            }
         }
     }
 
@@ -322,9 +327,80 @@ mod tests {
             unreachable!()
         };
         config.mouse_label = "{ear_label}/{global_id}".into();
+        config.groups.push(config::GroupConfig {
+            column: "Gene".into(),
+            ..Default::default()
+        });
         assert!(dialog.handle_action(Action::Apply, &mut active, &mut cage, &mut plate, None));
         assert!(!cage.stale && plate.stale);
         assert_eq!(active.cage_to_plate.plate.start_mouse, 42);
+    }
+
+    #[test]
+    fn plate_config_requires_level_one_before_apply_or_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("defaults.json");
+        let mut active = AppConfig::default();
+        let original = active.clone();
+        let mut cage = converted();
+        let mut plate = converted();
+        let mut dialog = ConfigDialog::new(&active, 1);
+        for action in [Action::Apply, Action::Save] {
+            assert!(!dialog.handle_action(action, &mut active, &mut cage, &mut plate, Some(&path)));
+            assert_eq!(
+                dialog.error.as_deref(),
+                Some("Genotype (level 1) requires a source column.")
+            );
+            assert_eq!(active, original);
+            assert!(!cage.stale && !plate.stale);
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn plate_config_can_apply_and_save_with_the_next_level_left_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("defaults.json");
+        let mut active = AppConfig::default();
+        active.plate_to_cage.groups.push(config::GroupConfig {
+            column: "Gene".into(),
+            name: "Custom gene".into(),
+            ..Default::default()
+        });
+        let mut cage = converted();
+        let mut plate = converted();
+        let mut dialog = ConfigDialog::new(&active, 1);
+        let ctx = egui::Context::default();
+        super::super::theme::apply(&ctx);
+        modal_frame(&ctx, &mut dialog, &plate, true, vec![]);
+        assert!(dialog.handle_action(Action::Apply, &mut active, &mut cage, &mut plate, None));
+        assert!(dialog.error.is_none());
+        assert_eq!(active.plate_to_cage.groups.len(), 1);
+        assert!(!cage.stale && !plate.stale);
+        let mut dialog = ConfigDialog::new(&active, 1);
+        modal_frame(&ctx, &mut dialog, &plate, true, vec![]);
+        assert!(!dialog.handle_action(
+            Action::Save,
+            &mut active,
+            &mut cage,
+            &mut plate,
+            Some(&path)
+        ));
+        assert!(dialog.error.is_none());
+        assert_eq!(active.plate_to_cage.groups.len(), 1);
+        let saved = read_config(&path).unwrap();
+        assert!(
+            saved.plate_to_cage.groups.is_empty(),
+            "source selections remain transient"
+        );
+        assert_eq!(
+            saved
+                .plate_to_cage
+                .genotype_display_profile("Gene")
+                .unwrap()
+                .name,
+            "Custom gene"
+        );
     }
 
     #[test]
