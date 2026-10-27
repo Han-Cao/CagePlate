@@ -1,6 +1,6 @@
 # Development
 
-Start with this guide and [architecture](architecture.md). Behavior and settings are specified in [Cage → Plate](cage-to-plate.md), [Plate → Cage](plate-to-cage.md), and [configuration](configuration.md).
+Start with this guide and [architecture](architecture.md). Behavior and settings are specified in [Cage to Plate](cage-to-plate.md), [Plate to Cage](plate-to-cage.md), and [configuration](configuration.md).
 
 ## Setup
 
@@ -15,7 +15,7 @@ cageplate-cli cage-to-plate [--input PATH|-] [--output PATH|-] [--config JSON]
 cageplate-cli plate-to-cage [--input PATH|-] [--output PATH|-] [--config JSON]
 ```
 
-Input/output default to `-` (stdin/stdout). Config is a JSON file path, not stdin; omitted settings use built-ins. Plate → Cage requires a config selecting genotype groups. Use `--help` for usage. Successful stdout contains only TSV; errors go to stderr with nonzero exit status. Output files are overwritten, but only after successful conversion/serialization; write failures may leave partial files. Limits: input 64 MiB, config 1 MiB, plus the table limits in architecture.md.
+Input/output default to `-` (stdin/stdout). Config is a JSON file path, not stdin; omitted settings use built-ins. Plate to Cage requires a config selecting genotype groups. Use `--help` for usage. Successful stdout contains only TSV; errors go to stderr with nonzero exit status. Output files are overwritten, but only after successful conversion/serialization; write failures may leave partial files. Limits: input 64 MiB, config 1 MiB, plus the table limits in architecture.md.
 
 Run the supplied fixtures from the project root:
 
@@ -51,13 +51,21 @@ cargo clippy --locked --features gui --all-targets -- -D warnings
 cargo test --locked --features gui --bin cageplate
 ```
 
+Windows release-script tests run separately in native Windows PowerShell, without Pester or real Cargo/Inno Setup:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows_packaging.ps1
+```
+
+They exercise temporary fake-tool builds, version/path handling, offline propagation, static-runtime flags and environment restoration, and error handling without installing the app or touching real defaults. See [Windows releases](windows-release.md) for end-to-end packaging and clean-machine verification.
+
 GUI-binary tests check light-theme/background/contrast, modal draft isolation and Apply/Cancel/Reset/save failures, header-mode inference/reparsing, headerless column selection, level-by-level genotype selection/cards, real bold heading font selection, both copy-button caches/stale gating, Escape dismissal, and vector-arrow rendering/click/keyboard/disabled responses without opening a window. Module unit tests cover parsing and conversion rules. Integration tests cover golden outputs (`tests/example_fixtures.rs`), invariants/edge cases (`tests/edge_cases.rs`), real CLI processes (`tests/cli.rs`), and temporary-directory persistence (`tests/configuration.rs`). Golden comparisons normalize only CRLF/LF and the final newline—not spaces, empty columns, labels, or ordering.
 
-Golden outputs remain Cage → Plate **19 rows × 6 columns**, ending at `3C`, and Plate → Cage **5 rows × 11 columns** with two header levels. Tests derive equivalent headerless Cage to Plate inputs and reject headerless Plate to Cage inputs without modifying supplied fixtures. **WSL/headless checks do not verify native Windows rendering, real editor diagnostics, or GUI/clipboard interaction.** Compilation is not a substitute for the checks below.
+Golden outputs remain Cage to Plate **19 rows × 6 columns**, ending at `3C`, and Plate to Cage **5 rows × 11 columns** with two header levels. Tests derive equivalent headerless Cage to Plate inputs and reject headerless Plate to Cage inputs without modifying supplied fixtures. **WSL/headless checks do not verify native Windows rendering, real editor diagnostics, or GUI/clipboard interaction.** Compilation is not a substitute for the checks below.
 
 ## Verified for the GUI refinement update
 
-Rust/Cargo 1.97.1 passed the WSL core/CLI and headless GUI suites (**70 tests** including Rustdoc), formatting, core/GUI Clippy with warnings denied, GUI compilation, and strict Rustdoc. Coverage includes paste inference/manual override, dropdown source mapping, genotype-level selection/cards, real bold section fonts, both clipboard modes/stale gating, and separate-sex-column round trips. Native Windows MSVC release compilation and **69 tests** also passed; the difference is the Unix-only permissions test. The updated executable is `target\release\cageplate.exe` (the older isolated-target build is not updated by this command).
+Rust/Cargo 1.97.1 passed the WSL core/CLI and headless GUI suites (**70 tests** including Rustdoc), formatting, core/GUI Clippy with warnings denied, GUI compilation, and strict Rustdoc. Coverage includes paste inference/manual override, dropdown source mapping, genotype-level selection/cards, real bold section fonts, both clipboard modes/stale gating, and separate-sex-column round trips. Native Windows MSVC release compilation and **69 tests** also passed; the difference is the Unix-only permissions test. That historical build used `target\release\cageplate.exe`; the release scripts described below now build the explicit-target artifact instead. Do not redistribute an older executable from the other path.
 
 These checks do **not** certify the live editor's displayed diagnostics, visible native arrow rendering, real desktop/Excel clipboard interaction, or the full Windows manual checklist. Reopen/reload rust-analyzer if stale editor warnings persist, and complete the native checks below.
 
@@ -72,19 +80,21 @@ These checks do **not** certify the live editor's displayed diagnostics, visible
 
 ## Windows build and manual checks
 
-Use a **native Windows** Rust 1.95+ MSVC toolchain with Visual Studio Build Tools (**Desktop development with C++**, MSVC toolset and Windows SDK), then run:
+Use a **native Windows** Rust 1.95+ MSVC toolchain with Visual Studio Build Tools (**Desktop development with C++**, MSVC toolset and Windows SDK), and Windows PowerShell 5.1+. Build using:
 
 ```powershell
-cargo build --release --locked --bin cageplate
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
-Launch/distribute `target\release\cageplate.exe`. Windows locks a running executable; close it before overwriting that path, or leave it running and build a separate artifact:
+Launch/distribute `target\x86_64-pc-windows-msvc\release\cageplate.exe`. The script uses locked dependencies, builds only the GUI, and statically links the MSVC runtime to avoid a Visual C++ Redistributable prerequisite. Cargo target-directory overrides are respected. It does not update `target\release\cageplate.exe`. Windows locks a running executable: close any copy from the output path before rebuilding, or set a separate `CARGO_TARGET_DIR`.
+
+With Inno Setup 6.3+ installed, build the executable and installer together:
 
 ```powershell
-cargo build --release --locked --offline --target x86_64-pc-windows-msvc --bin cageplate
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-The isolated executable is `target\x86_64-pc-windows-msvc\release\cageplate.exe`.
+The installer is `target\installer\CagePlate-<version>-Setup.exe`. Both scripts accept `-Offline`; the installer also accepts `-IsccPath`. See [Windows releases](windows-release.md) for compiler discovery, execution-policy troubleshooting, versioning, preserved defaults, packaging tests, unsigned-release limitations, and the installer/upgrade/uninstall checklist. The following GUI checks remain necessary regardless of packaging.
 
 - Inspect the two workflow tabs without a preceding app-name heading, bold section/collapsible/card titles, and reorder-arrow controls at normal/high DPI. Arrows are painted vectors; titles use embedded Ubuntu Bold, with its licence/attribution under `assets/fonts/`. Check that editable text controls are white like the main input editor and output meanings are right-aligned with colons.
 - At the minimum 720 × 560 window size, open both Config pop-ups, scroll through every section and confirm Apply/Cancel/Save as default/Reset remain reachable. Background controls must be blocked; Escape should close an open combo-box before discarding the modal.
